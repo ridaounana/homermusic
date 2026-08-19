@@ -154,8 +154,16 @@ const cmd = (name) => require(`../src/commands/${name}`);
 
   await test('track titles with markdown characters cannot break the embed', () => {
     const link = fmt.trackLink(makeTrack('[BAD] (title)'));
-    assert.ok(link.includes('\\['), `unescaped brackets: ${link}`);
-    assert.ok(link.includes('\\('), `unescaped parens: ${link}`);
+    // Brackets must be escaped - an unescaped ] ends the label early.
+    assert.ok(link.includes('\\[') && link.includes('\\]'), `unescaped brackets: ${link}`);
+    // Parens must NOT be escaped. Discord does not treat ( ) as markdown, so a
+    // backslash before them is not a recognised escape and renders literally.
+    assert.ok(!link.includes('\\('), `parens should not be escaped: ${link}`);
+    // A raw paren in the URL half would terminate the link early, so it is
+    // percent-encoded instead.
+    const url = link.slice(link.indexOf('](') + 2, -1);
+    assert.ok(!url.includes('(') && !url.includes(')'), `raw paren in url: ${url}`);
+    assert.ok(link.endsWith(')'), `link should close: ${link}`);
   });
 
   await test('progress bar stays inside its length at both ends', () => {

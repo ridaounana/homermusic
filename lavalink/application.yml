@@ -25,9 +25,26 @@ plugins:
     allowSearch: true
     allowDirectVideoIds: true
     allowDirectPlaylistIds: true
+    # Order matters - the plugin tries these top to bottom. Valid names in
+    # youtube-plugin 1.18.x are exactly: ANDROID, ANDROID_MUSIC, ANDROID_VR,
+    # IOS, MUSIC, MWEB, TV, TVHTML5_SIMPLY, WEB, WEBEMBEDDED. An unrecognised
+    # name is dropped SILENTLY - check the "initialised with clients" line in
+    # the startup log to confirm what actually loaded.
+    #
+    #   MUSIC            search only, never attempts playback (serves ytmsearch)
+    #   TVHTML5_SIMPLY   most reliable player without a poToken; gets past the
+    #   / TV             "This video requires login" gate the others hit
+    #   ANDROID_*, MWEB  further poToken-free fallbacks
+    #   WEB/WEBEMBEDDED  last: YouTube now serves these SABR-only, so they fail
+    #                    with "No supported audio streams available" unless a
+    #                    poToken is supplied (deliberately not - see README).
     clients:
       - MUSIC
+      - TVHTML5_SIMPLY
+      - TV
       - ANDROID_VR
+      - ANDROID_MUSIC
+      - MWEB
       - WEB
       - WEBEMBEDDED
     # NOTE: this plugin also supports `oauth` and `poToken` options that exist

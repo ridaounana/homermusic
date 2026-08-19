@@ -52,11 +52,16 @@ function truncate(text, max = 60) {
   return clean.length <= max ? clean : `${clean.slice(0, max - 1)}…`;
 }
 
-/** Markdown link that won't break on titles containing [ ] ( ). */
+/** Markdown link that won't break on titles containing [ ]. */
 function trackLink(track) {
-  const title = truncate(track?.info?.title || 'Unknown', 60).replace(/([[\]()])/g, '\\$1');
+  // Only [ and ] need escaping in a link label. Discord does not treat ( or )
+  // as markdown, so a backslash before them is not a recognised escape and
+  // renders literally - "Who's Stopping Me \(& Metro Boomin\)".
+  const title = truncate(track?.info?.title || 'Unknown', 60).replace(/([[\]])/g, '\\$1');
   const uri = track?.info?.uri;
-  return uri ? `[${title}](${uri})` : title;
+  // Parens in the URL half would still end the link early, so encode them.
+  const safeUri = uri ? String(uri).replace(/\(/g, '%28').replace(/\)/g, '%29') : uri;
+  return safeUri ? `[${title}](${safeUri})` : title;
 }
 
 function totalQueueDuration(tracks) {
