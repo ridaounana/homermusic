@@ -81,6 +81,12 @@ function setupLavalink(client, { config, store }) {
    * candidates - the message describes something nobody ever heard.
    */
   async function dropLastNowPlaying(player) {
+    // The send may still be in flight - trackError can arrive before Discord
+    // has answered trackStart. Without waiting for it, npMessage is still null
+    // here and the embed survives, which is what left duplicates behind.
+    const pending = player.get('npPending');
+    if (pending) { try { await pending; } catch { /* send failed, nothing to drop */ } }
+
     const previous = player.get('npMessage');
     if (!previous) return;
     try {
@@ -97,11 +103,17 @@ function setupLavalink(client, { config, store }) {
       player.set('idleSince', null);
       // Playback really started, so any in-flight source retry is resolved.
       player.set('fallbackFailures', null);
+      player.set('fallbackOrigin', null);
       await clearLastNowPlaying(player);
-      const message = await announce(player, {
+
+      // Keep the in-flight send so trackError can wait for it before deleting.
+      const pending = announce(player, {
         embeds: [embeds.nowPlaying(config, player, track)],
         components: controlRows(player),
       });
+      player.set('npPending', pending);
+      const message = await pending;
+      player.set('npPending', null);
       if (message) player.set('npMessage', message);
     })
 
@@ -111,22 +123,26 @@ function setupLavalink(client, { config, store }) {
 
     .on('trackError', async (player, track, payload) => {
       console.error(`[player] track error in ${player.guildId}:`, payload?.exception?.message || payload);
-      const title = track?.info?.title || 'that track';
+      // Record the retry state BEFORE any await. queueEnd fires as soon as the
+      // failed track leaves the queue, and if it wins the race it sees no
+      // recovery in progress and announces "queue finished" mid-retry.
+      const failures = player.get('fallbackFailures') || [];
+      const nextFailures = [...failures, { uri: track?.info?.uri, family: familyOf(track) }];
+      player.set('fallbackFailures', nextFailures);
+
+      // The song the user actually asked for. Every retry searches from this,
+      // never from the previous fallback - otherwise the query drifts a little
+      // further each round and ends up on an unrelated song.
+      const origin = player.get('fallbackOrigin') || track;
+      player.set('fallbackOrigin', origin);
+      const title = origin?.info?.title || 'that track';
 
       // This track announced itself on trackStart but never produced audio, so
       // take its message down rather than leaving a trail of them.
       await dropLastNowPlaying(player);
 
-      // One source failing is routine, so look for the same song elsewhere
-      // before giving up. The failure list is cleared on trackStart, which only
-      // fires once playback genuinely begins - so a fallback that also fails
-      // leaves the list intact and the next candidate gets tried instead.
-      const failures = player.get('fallbackFailures') || [];
-      const nextFailures = [...failures, { uri: track?.info?.uri, family: familyOf(track) }];
-      player.set('fallbackFailures', nextFailures);
-
       if (nextFailures.length <= MAX_ATTEMPTS) {
-        const alt = await findAlternative(player, track, track?.requester, nextFailures)
+        const alt = await findAlternative(player, origin, track?.requester, nextFailures)
           .catch(() => null);
         if (alt) {
           console.log(`[player] retrying "${title}" on ${alt.source}`);
@@ -140,6 +156,7 @@ function setupLavalink(client, { config, store }) {
       }
 
       player.set('fallbackFailures', null);
+      player.set('fallbackOrigin', null);
       await announce(player, {
         embeds: [embeds.error(config, `Couldn't play **${title}** on any source — skipping it.`)],
       });
@@ -154,12 +171,12 @@ function setupLavalink(client, { config, store }) {
       // A source retry is in flight: the queue only looks empty because the
       // failed track was dropped. Announcing "queue finished" here is what put
       // one between every retry, and letting autoplay fire would queue an
-      // unrelated song mid-recovery. idleSince is still set so that a recovery
-      // which never succeeds still lets the idle timer leave the channel.
-      if ((player.get('fallbackFailures') || []).length) {
-        player.set('idleSince', Date.now());
-        return;
-      }
+      // unrelated song mid-recovery.
+      //
+      // Leaving the channel is handled by the manager's onEmptyQueue
+      // destroyAfterMs, not from here, so returning early cannot strand the
+      // bot in the channel - a recovery that never succeeds still times out.
+      if ((player.get('fallbackFailures') || []).length) return;
 
       await clearLastNowPlaying(player);
 

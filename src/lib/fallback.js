@@ -58,6 +58,46 @@ function buildQuery(track) {
   return (hasAuthor ? title : `${author} ${title}`).replace(/\s+/g, ' ').trim();
 }
 
+/** Comparable word set: lowercase, punctuation stripped, short words dropped. */
+function keywords(text) {
+  const words = String(text || '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length > 2);
+  return new Set(words);
+}
+
+/**
+ * Is `candidate` plausibly the same song as `original`?
+ *
+ * Without this the retry walks away from what was asked for: a weak search
+ * returns whatever is top of the list, that result fails too, and the next
+ * round searches using *its* title. Two hops in, "CAMEMBERT" had become
+ * "CRITALITY IRELIA! YES, YOU READ IT RIGHT!". Playing an unrelated song is
+ * worse than admitting the track could not be played.
+ */
+function isSameSong(original, candidate) {
+  // Match on the TITLE's words specifically. Pooling title and artist together
+  // lets a different song by the right artist through: "CAMEMBERT" by ZKR
+  // scored exactly 0.5 against "GTS" by Zkr on the artist alone.
+  const wanted = keywords(original?.title);
+  // Compare against title AND author, because sources split them differently -
+  // SoundCloud files the same track as "ElGrandeToto - Mghayer" by "Acoustician".
+  const got = keywords(`${candidate?.title || ''} ${candidate?.author || ''}`);
+
+  if (!wanted.size) {
+    // Title is all very short words ("Up", "OK"); nothing to score, so require
+    // the titles to be the same once punctuation and case are removed.
+    const plain = (s) => String(s || '').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+    return Boolean(plain(original?.title)) && plain(original?.title) === plain(candidate?.title);
+  }
+
+  let hits = 0;
+  for (const word of wanted) if (got.has(word)) hits += 1;
+  return hits / wanted.size >= 0.5;
+}
+
 /** Families that have failed enough times to be considered unavailable. */
 function deadFamilies(failures) {
   const counts = new Map();
@@ -73,24 +113,28 @@ function deadFamilies(failures) {
 /**
  * Finds the same song somewhere that will actually stream.
  *
+ * `origin` must always be the track the user asked for, never the previous
+ * fallback - the query is rebuilt from it every round, so passing the last
+ * failure instead lets the search drift away from the request.
+ *
  * `failures` is the list of { uri, family } that already failed for this song.
- * The family the track came from is retried first unless it looks dead: a
+ * The family the origin came from is retried first unless it looks dead: a
  * SoundCloud 404 is usually one restricted upload, and a different upload of
  * the same song commonly plays, so retiring the whole source on one failure
  * would throw away the best match. Returns { track, source } or null.
  */
-async function findAlternative(player, track, requester, failures = []) {
-  const query = buildQuery(track);
+async function findAlternative(player, origin, requester, failures = []) {
+  const query = buildQuery(origin);
   if (!query) return null;
 
   const failedUris = new Set(failures.map((f) => f?.uri).filter(Boolean));
-  failedUris.add(track?.info?.uri);
+  failedUris.add(origin?.info?.uri);
   const dead = deadFamilies(failures);
 
-  const origin = familyOf(track);
+  const originFamily = familyOf(origin);
   const ordered = [
-    ...FAMILIES.filter((f) => f.name === origin),
-    ...FAMILIES.filter((f) => f.name !== origin),
+    ...FAMILIES.filter((f) => f.name === originFamily),
+    ...FAMILIES.filter((f) => f.name !== originFamily),
   ].filter((f) => !dead.includes(f.name));
 
   for (const family of ordered) {
@@ -102,7 +146,9 @@ async function findAlternative(player, track, requester, failures = []) {
         continue; // source disabled or unreachable - try the next one
       }
       const hit = (result?.tracks || []).find(
-        (t) => t?.info?.uri && !failedUris.has(t.info.uri),
+        (t) => t?.info?.uri
+          && !failedUris.has(t.info.uri)
+          && isSameSong(origin?.info, t.info),
       );
       if (hit) return { track: hit, source: family.name };
     }
@@ -111,6 +157,6 @@ async function findAlternative(player, track, requester, failures = []) {
 }
 
 module.exports = {
-  findAlternative, familyOf, buildQuery, deadFamilies,
+  findAlternative, familyOf, buildQuery, deadFamilies, isSameSong,
   MAX_ATTEMPTS, FAILURES_PER_FAMILY, FAMILIES,
 };

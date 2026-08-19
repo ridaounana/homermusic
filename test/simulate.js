@@ -231,6 +231,61 @@ const cmd = (name) => require(`../src/commands/${name}`);
     assert.strictEqual(q2, 'Daft Punk One More Time');
   });
 
+  await test('an unrelated search result is rejected, not played', async () => {
+    // The real regression: "CAMEMBERT" failed, the retry took whatever was top
+    // of the results, and the bot played "CRITALITY IRELIA! YES, YOU READ IT
+    // RIGHT!" instead. A wrong song is worse than an honest failure.
+    const junk = makeTrack('CRITALITY IRELIA! YES, YOU READ IT RIGHT!', {
+      author: 'Some Streamer', sourceName: 'soundcloud', uri: 'https://sc/junk',
+    });
+    const player = makeSearchPlayer({ scsearch: [junk], ytmsearch: [junk], ytsearch: [junk] });
+    const wanted = makeTrack('CAMEMBERT', { author: 'ZKR', sourceName: 'youtube', uri: 'https://yt/1' });
+
+    const found = await fallback.findAlternative(player, wanted, null,
+      [{ uri: 'https://yt/1', family: 'youtube' }]);
+    assert.strictEqual(found, null, 'must not accept an unrelated track');
+
+    assert.ok(fallback.isSameSong({ title: 'CAMEMBERT', author: 'ZKR' },
+      { title: 'CAMEMBERT (Clip Officiel)', author: 'ZKR' }), 'same song should match');
+    assert.ok(!fallback.isSameSong({ title: 'CAMEMBERT', author: 'ZKR' },
+      { title: 'Not the Answer You Seek', author: 'Someone' }), 'different song must not');
+
+    // A different song by the RIGHT artist is still the wrong song. Scoring
+    // title and artist in one pool let this through at exactly 0.5.
+    assert.ok(!fallback.isSameSong({ title: 'CAMEMBERT', author: 'ZKR' },
+      { title: 'GTS', author: 'Zkr' }), 'same artist is not the same song');
+
+    // Sources split title/author differently, so the artist may legitimately
+    // appear inside the candidate's title.
+    assert.ok(fallback.isSameSong({ title: 'Mghayer', author: 'ElGrandeToto' },
+      { title: 'ElGrandeToto - Mghayer', author: 'Acoustician' }), 'reshuffled credits should match');
+
+    // Titles too short to yield keywords fall back to an exact comparison.
+    assert.ok(fallback.isSameSong({ title: 'Up', author: 'X' }, { title: 'up!', author: 'Y' }));
+    assert.ok(!fallback.isSameSong({ title: 'Up', author: 'X' }, { title: 'Down', author: 'X' }));
+  });
+
+  await test('every retry searches the original song, not the last failure', async () => {
+    // Query drift: retry 1 found "Mghayer (Live Performance) (feat. Aykonz)",
+    // and searching from THAT title walked further away each round.
+    const live = makeTrack('Mghayer (Live Performance) (feat. Aykonz)', {
+      author: 'Aloha Live', sourceName: 'soundcloud', uri: 'https://sc/live',
+    });
+    const player = makeSearchPlayer({ scsearch: [live] });
+    const original = makeTrack('Mghayer', {
+      author: 'ElGrandeToto', sourceName: 'youtube', uri: 'https://yt/orig',
+    });
+
+    await fallback.findAlternative(player, original, null,
+      [{ uri: 'https://yt/orig', family: 'youtube' }]);
+    // The query must be built from the original every time.
+    assert.ok(player.searched.length, 'should have searched');
+    for (const q of player.searched) {
+      assert.ok(/mghayer/i.test(q), `query lost the song: ${q}`);
+      assert.ok(!/live performance|aykonz/i.test(q), `query drifted: ${q}`);
+    }
+  });
+
   await test('one 404 retries the same source for a different upload', async () => {
     // A SoundCloud Go+ upload 404s, but another upload of the song plays.
     const other = makeTrack('Song', { sourceName: 'soundcloud', uri: 'https://sc/other' });
