@@ -10,6 +10,7 @@ const os = require('os');
 const path = require('path');
 
 const fmt = require('../src/lib/format');
+const fallback = require('../src/lib/fallback');
 const { checkControl, isDj } = require('../src/lib/permissions');
 const { Store } = require('../src/store');
 const { handleInteraction } = require('../src/interactions');
@@ -170,6 +171,108 @@ const cmd = (name) => require(`../src/commands/${name}`);
     assert.strictEqual(fmt.progressBar(0, 100, 10).length - 1, 10 - 1 + 1);
     const end = fmt.progressBar(100, 100, 10);
     assert.ok(end.endsWith('🔘'), 'knob should sit at the end');
+  });
+
+  console.log(lines.splice(0).join('\n'));
+  console.log('\nSOURCE FALLBACK');
+
+  // A player whose search() answers from a fixed map of prefix -> tracks.
+  const makeSearchPlayer = (byPrefix) => ({
+    searched: [],
+    async search({ query }) {
+      const prefix = query.slice(0, query.indexOf(':'));
+      this.searched.push(query);
+      return { tracks: byPrefix[prefix] || [] };
+    },
+  });
+
+  await test('familyOf groups both YouTube prefixes under one source', () => {
+    assert.strictEqual(fallback.familyOf(makeTrack('a', { sourceName: 'youtube' })), 'youtube');
+    assert.strictEqual(fallback.familyOf(makeTrack('a', { sourceName: 'youtubemusic' })), 'youtube');
+    assert.strictEqual(fallback.familyOf(makeTrack('a', { sourceName: 'soundcloud' })), 'soundcloud');
+    assert.strictEqual(fallback.familyOf(makeTrack('a', { sourceName: 'bandcamp' })), null);
+  });
+
+  await test('buildQuery strips video noise and does not repeat the artist', () => {
+    const q = fallback.buildQuery(makeTrack('Daft Punk - One More Time (Official Video) [HD]', {
+      author: 'Daft Punk',
+    }));
+    assert.strictEqual(q, 'Daft Punk - One More Time');
+    // "Artist - Topic" channels should not leak the suffix into the query.
+    const q2 = fallback.buildQuery(makeTrack('One More Time', { author: 'Daft Punk - Topic' }));
+    assert.strictEqual(q2, 'Daft Punk One More Time');
+  });
+
+  await test('one 404 retries the same source for a different upload', async () => {
+    // A SoundCloud Go+ upload 404s, but another upload of the song plays.
+    const other = makeTrack('Song', { sourceName: 'soundcloud', uri: 'https://sc/other' });
+    const player = makeSearchPlayer({ scsearch: [other] });
+    const failed = makeTrack('Song', { sourceName: 'soundcloud', uri: 'https://sc/gone' });
+
+    const found = await fallback.findAlternative(player, failed, null,
+      [{ uri: 'https://sc/gone', family: 'soundcloud' }]);
+    assert.ok(found, 'should retry SoundCloud rather than abandon it');
+    assert.strictEqual(found.source, 'soundcloud');
+    assert.strictEqual(found.track.info.uri, 'https://sc/other');
+  });
+
+  await test('a source retires after repeated failures', async () => {
+    const scTrack = makeTrack('Song', { sourceName: 'soundcloud', uri: 'https://sc/1' });
+    const player = makeSearchPlayer({ scsearch: [scTrack] });
+    const failed = makeTrack('Song', { sourceName: 'youtube', uri: 'https://yt/2' });
+
+    const found = await fallback.findAlternative(player, failed, null, [
+      { uri: 'https://yt/1', family: 'youtube' },
+      { uri: 'https://yt/2', family: 'youtube' },
+    ]);
+    assert.ok(found, 'should move to SoundCloud');
+    assert.strictEqual(found.source, 'soundcloud');
+    assert.ok(!player.searched.some((q) => q.startsWith('yt')), 'a dead source must not be retried');
+    assert.deepStrictEqual(
+      fallback.deadFamilies([
+        { family: 'youtube' }, { family: 'youtube' }, { family: 'soundcloud' },
+      ]),
+      ['youtube'],
+    );
+  });
+
+  await test('findAlternative never returns a uri that already failed', async () => {
+    const same = makeTrack('Song', { sourceName: 'soundcloud', uri: 'https://sc/same' });
+    const player = makeSearchPlayer({ scsearch: [same] });
+    const found = await fallback.findAlternative(player, same, null,
+      [{ uri: 'https://sc/same', family: 'soundcloud' }]);
+    assert.strictEqual(found, null, 'the failing uri must not be offered back');
+  });
+
+  await test('findAlternative gives up when every source is exhausted', async () => {
+    const player = makeSearchPlayer({});
+    const dead = fallback.FAMILIES.flatMap((f) => [
+      { uri: `https://${f.name}/1`, family: f.name },
+      { uri: `https://${f.name}/2`, family: f.name },
+    ]);
+    const found = await fallback.findAlternative(
+      player, makeTrack('Song', { sourceName: 'youtube' }), null, dead,
+    );
+    assert.strictEqual(found, null);
+    assert.strictEqual(player.searched.length, 0, 'no searches when all sources are dead');
+  });
+
+  await test('a search that throws does not abort the whole retry', async () => {
+    const ytTrack = makeTrack('Song', { sourceName: 'youtube', uri: 'https://yt/ok' });
+    const player = {
+      searched: [],
+      async search({ query }) {
+        this.searched.push(query);
+        if (query.startsWith('scsearch')) throw new Error('source down');
+        return { tracks: [ytTrack] };
+      },
+    };
+    const found = await fallback.findAlternative(
+      player, makeTrack('Song', { sourceName: 'soundcloud', uri: 'https://sc/1' }), null,
+      [{ uri: 'https://sc/1', family: 'soundcloud' }],
+    );
+    assert.ok(found, 'should fall through to the next source');
+    assert.strictEqual(found.source, 'youtube');
   });
 
   console.log(lines.splice(0).join('\n'));

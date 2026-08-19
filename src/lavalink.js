@@ -3,6 +3,7 @@ const { LavalinkManager } = require('lavalink-client');
 const embeds = require('./lib/embeds');
 const { controlRows, disabledRows } = require('./lib/controls');
 const { findNextTrack } = require('./lib/autoplay');
+const { findAlternative, familyOf, MAX_ATTEMPTS } = require('./lib/fallback');
 
 /**
  * Creates the Lavalink manager and wires every player event.
@@ -75,6 +76,8 @@ function setupLavalink(client, { config, store }) {
   manager
     .on('trackStart', async (player, track) => {
       player.set('idleSince', null);
+      // Playback really started, so any in-flight source retry is resolved.
+      player.set('fallbackFailures', null);
       await clearLastNowPlaying(player);
       const message = await announce(player, {
         embeds: [embeds.nowPlaying(config, player, track)],
@@ -89,8 +92,33 @@ function setupLavalink(client, { config, store }) {
 
     .on('trackError', async (player, track, payload) => {
       console.error(`[player] track error in ${player.guildId}:`, payload?.exception?.message || payload);
+      const title = track?.info?.title || 'that track';
+
+      // One source failing is routine, so look for the same song elsewhere
+      // before giving up. The failure list is cleared on trackStart, which only
+      // fires once playback genuinely begins - so a fallback that also fails
+      // leaves the list intact and the next candidate gets tried instead.
+      const failures = player.get('fallbackFailures') || [];
+      const nextFailures = [...failures, { uri: track?.info?.uri, family: familyOf(track) }];
+      player.set('fallbackFailures', nextFailures);
+
+      if (nextFailures.length <= MAX_ATTEMPTS) {
+        const alt = await findAlternative(player, track, track?.requester, nextFailures)
+          .catch(() => null);
+        if (alt) {
+          console.log(`[player] retrying "${title}" on ${alt.source}`);
+          try {
+            await player.play({ clientTrack: alt.track });
+            return;
+          } catch (e) {
+            console.error('[player] fallback play failed:', e?.message || e);
+          }
+        }
+      }
+
+      player.set('fallbackFailures', null);
       await announce(player, {
-        embeds: [embeds.error(config, `Couldn't play **${track?.info?.title || 'that track'}** — skipping it.`)],
+        embeds: [embeds.error(config, `Couldn't play **${title}** on any source — skipping it.`)],
       });
     })
 
