@@ -1,0 +1,19 @@
+{
+  "name": "music-bot",
+  "version": "1.0.0",
+  "description": "Self-hosted Discord music bot on Lavalink v4 — queue, filters, playlists, DJ roles, button controls.",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/index.js",
+    "deploy": "node src/deploy-commands.js",
+    "check": "node test/syntax-check.js",
+    "simulate": "node test/simulate.js"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "discord.js": "^14.16.3",
+    "lavalink-client": "^2.4.1"
+  },
+  "license": "MIT"
+}

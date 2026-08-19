@@ -1,0 +1,140 @@
+# ============================================================================
+#  Lavalink v4 server config
+#
+#  Lavalink is the audio engine: it fetches, decodes and streams audio to
+#  Discord. The bot process only sends it instructions. Run this on the same
+#  VPS as the bot and keep it bound to localhost.
+#
+#  Plugin versions below were current when this was written - check for newer
+#  releases before deploying:
+#    https://github.com/lavalink-devs/youtube-source/releases
+#    https://github.com/topi314/LavaSrc/releases
+# ============================================================================
+
+server:
+  port: 2333
+  address: 127.0.0.1   # localhost only. Never expose 2333 to the internet.
+  http2:
+    enabled: false
+
+plugins:
+  # --- YouTube ------------------------------------------------------------
+  # Read the note in README.md about YouTube before enabling this.
+  youtube:
+    enabled: true
+    allowSearch: true
+    allowDirectVideoIds: true
+    allowDirectPlaylistIds: true
+    clients:
+      - MUSIC
+      - ANDROID_VR
+      - WEB
+      - WEBEMBEDDED
+    # NOTE: this plugin also supports `oauth` and `poToken` options that exist
+    # specifically to get around YouTube's bot detection. They are deliberately
+    # left out here. The plugin's own docs warn they can get the linked Google
+    # account terminated, and using them means knowingly evading an access
+    # control rather than just consuming a public endpoint.
+
+  # --- Spotify / Apple Music / Deezer -------------------------------------
+  # These services do not allow third-party audio streaming. LavaSrc reads the
+  # metadata from a link (title, artist, album art) and finds a matching
+  # playable track on the source set in `lavalink.plugins.lavasrc.sources`.
+  lavasrc:
+    providers:
+      - "ytmsearch:\"%ISRC%\""
+      - "ytmsearch:%QUERY%"
+      - "ytsearch:%QUERY%"
+      - "scsearch:%QUERY%"
+    sources:
+      spotify: true
+      applemusic: true
+      deezer: false      # needs a Deezer ARL, off by default
+      yandexmusic: false
+      vkmusic: false
+      flowerytts: false
+      youtube: true
+    spotify:
+      # https://developer.spotify.com/dashboard - free, takes 2 minutes
+      clientId: "YOUR_SPOTIFY_CLIENT_ID"
+      clientSecret: "YOUR_SPOTIFY_CLIENT_SECRET"
+      countryCode: "FR"
+      playlistLoadLimit: 6   # x100 tracks
+      albumLoadLimit: 6
+    applemusic:
+      countryCode: "FR"
+      mediaAPIToken: ""      # optional; without it Apple links use a fallback
+      playlistLoadLimit: 6
+      albumLoadLimit: 6
+
+lavalink:
+  plugins:
+    - dependency: "dev.lavalink.youtube:youtube-plugin:1.13.5"
+      snapshot: false
+    - dependency: "com.github.topi314.lavasrc:lavasrc-plugin:4.7.3"
+      repository: "https://maven.lavalink.dev/releases"
+      snapshot: false
+
+  server:
+    password: "CHANGE_THIS_PASSWORD"
+
+    sources:
+      # youtube is handled by the plugin above, so the built-in one stays off
+      youtube: false
+      soundcloud: true
+      bandcamp: true
+      twitch: true
+      vimeo: true
+      nico: false
+      http: true        # direct .mp3/.m4a/.ogg links and internet radio
+      local: false      # set true if you want to play files from disk
+
+    filters:            # which audio filters clients may use
+      volume: true
+      equalizer: true
+      karaoke: true
+      timescale: true
+      tremolo: true
+      vibrato: true
+      distortion: true
+      rotation: true
+      channelMix: true
+      lowPass: true
+
+    bufferDurationMs: 400
+    frameBufferDurationMs: 5000
+    opusEncodingQuality: 10
+    resamplingQuality: LOW
+    trackStuckThresholdMs: 10000
+    useSeekGhosting: true
+    youtubePlaylistLoadLimit: 6
+    playerUpdateInterval: 5
+    youtubeSearchEnabled: true
+    soundcloudSearchEnabled: true
+    gc-warnings: true
+
+metrics:
+  prometheus:
+    enabled: false
+    endpoint: /metrics
+
+sentry:
+  dsn: ""
+
+logging:
+  file:
+    path: ./logs/
+  level:
+    root: INFO
+    lavalink: INFO
+  request:
+    enabled: true
+    includeClientInfo: true
+    includeHeaders: false
+    includeQueryString: true
+    includePayload: true
+    maxPayloadLength: 10000
+  logback:
+    rollingpolicy:
+      max-file-size: 25MB
+      max-history: 7
