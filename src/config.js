@@ -28,6 +28,8 @@ const config = {
 
   botName: process.env.BOT_NAME || 'Music',
   embedColor: parseInt((process.env.EMBED_COLOR || '9B59B6').replace('#', ''), 16),
+  // Shown in the footer of the now-playing and queue embeds. Set empty to drop it.
+  brandFooter: process.env.BRAND_FOOTER ?? 'built for chaos333 community',
 
   lavalink: {
     host: process.env.LAVALINK_HOST || '127.0.0.1',

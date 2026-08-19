@@ -38,12 +38,19 @@ function parseTime(input) {
   return null;
 }
 
-/** Text progress bar for the now-playing embed. */
-function progressBar(positionMs, totalMs, length = 18) {
-  if (!Number.isFinite(totalMs) || totalMs <= 0) return '🔴 ' + '▬'.repeat(length);
+/**
+ * Segmented progress bar: ▰▰▰▰▱▱▱▱▱▱.
+ *
+ * Deliberately emoji-free. An emoji knob renders at a different width to the
+ * track characters around it, so the bar jitters as it advances and cannot be
+ * aligned with the timestamps beside it. These two glyphs are the same width,
+ * so the bar sits still inside an inline code span.
+ */
+function progressBar(positionMs, totalMs, length = 16) {
+  if (!Number.isFinite(totalMs) || totalMs <= 0) return '▱'.repeat(length);
   const ratio = Math.min(1, Math.max(0, positionMs / totalMs));
-  const knob = Math.round(ratio * (length - 1));
-  return '▬'.repeat(knob) + '🔘' + '▬'.repeat(length - 1 - knob);
+  const filled = Math.round(ratio * length);
+  return '▰'.repeat(filled) + '▱'.repeat(length - filled);
 }
 
 /** Discord embeds die past 4096 chars; titles past 256. Keep it safe. */

@@ -72,6 +72,25 @@ function setupLavalink(client, { config, store }) {
     player.set('npMessage', null);
   }
 
+  /**
+   * Remove a now-playing message for a track that never actually played.
+   *
+   * Lavalink emits trackStart before the stream is fetched, so a track that
+   * fails still announces itself first. Leaving those behind is what turns one
+   * `/play` into a wall of embeds while the source retry works through
+   * candidates - the message describes something nobody ever heard.
+   */
+  async function dropLastNowPlaying(player) {
+    const previous = player.get('npMessage');
+    if (!previous) return;
+    try {
+      await previous.delete();
+    } catch {
+      try { await previous.edit({ components: disabledRows(player) }); } catch { /* gone */ }
+    }
+    player.set('npMessage', null);
+  }
+
   // ----------------------------------------------------------- player events
   manager
     .on('trackStart', async (player, track) => {
@@ -93,6 +112,10 @@ function setupLavalink(client, { config, store }) {
     .on('trackError', async (player, track, payload) => {
       console.error(`[player] track error in ${player.guildId}:`, payload?.exception?.message || payload);
       const title = track?.info?.title || 'that track';
+
+      // This track announced itself on trackStart but never produced audio, so
+      // take its message down rather than leaving a trail of them.
+      await dropLastNowPlaying(player);
 
       // One source failing is routine, so look for the same song elsewhere
       // before giving up. The failure list is cleared on trackStart, which only
@@ -128,6 +151,16 @@ function setupLavalink(client, { config, store }) {
     })
 
     .on('queueEnd', async (player) => {
+      // A source retry is in flight: the queue only looks empty because the
+      // failed track was dropped. Announcing "queue finished" here is what put
+      // one between every retry, and letting autoplay fire would queue an
+      // unrelated song mid-recovery. idleSince is still set so that a recovery
+      // which never succeeds still lets the idle timer leave the channel.
+      if ((player.get('fallbackFailures') || []).length) {
+        player.set('idleSince', Date.now());
+        return;
+      }
+
       await clearLastNowPlaying(player);
 
       // Autoplay keeps things going when nobody queues anything else.

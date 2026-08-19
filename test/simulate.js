@@ -11,6 +11,7 @@ const path = require('path');
 
 const fmt = require('../src/lib/format');
 const fallback = require('../src/lib/fallback');
+const embeds = require('../src/lib/embeds');
 const { checkControl, isDj } = require('../src/lib/permissions');
 const { Store } = require('../src/store');
 const { handleInteraction } = require('../src/interactions');
@@ -25,6 +26,7 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'music-'));
 
 const config = {
   botName: 'Test', embedColor: 0x9b59b6,
+  brandFooter: 'built for chaos333 community',
   player: { defaultSearch: 'ytmsearch', defaultVolume: 80, maxVolume: 200, maxQueueSize: 1000 },
   dataFile: path.join(tmp, 'guilds.json'),
 };
@@ -167,10 +169,36 @@ const cmd = (name) => require(`../src/commands/${name}`);
     assert.ok(link.endsWith(')'), `link should close: ${link}`);
   });
 
-  await test('progress bar stays inside its length at both ends', () => {
-    assert.strictEqual(fmt.progressBar(0, 100, 10).length - 1, 10 - 1 + 1);
-    const end = fmt.progressBar(100, 100, 10);
-    assert.ok(end.endsWith('🔘'), 'knob should sit at the end');
+  await test('progress bar keeps a fixed width at both ends', () => {
+    // Fixed width matters: the bar shares an inline code span with the
+    // timestamps, so any drift misaligns the whole line.
+    for (const pos of [0, 1, 49, 50, 99, 100, 500]) {
+      assert.strictEqual(fmt.progressBar(pos, 100, 10).length, 10, `width at ${pos}`);
+    }
+    assert.strictEqual(fmt.progressBar(0, 100, 10), '▱'.repeat(10));
+    assert.strictEqual(fmt.progressBar(100, 100, 10), '▰'.repeat(10));
+    // An unknown or zero duration must not produce a ragged bar.
+    assert.strictEqual(fmt.progressBar(5, 0, 10).length, 10);
+    assert.strictEqual(fmt.progressBar(5, undefined, 10).length, 10);
+    // No emoji: they render at a different width and break the alignment.
+    assert.ok(!/\p{Extended_Pictographic}/u.test(fmt.progressBar(50, 100, 10)));
+  });
+
+  await test('the community footer is applied, and can be turned off', () => {
+    const { EmbedBuilder } = require('discord.js');
+    const branded = embeds.setBrandFooter(new EmbedBuilder(), config).toJSON();
+    assert.strictEqual(branded.footer.text, 'built for chaos333 community');
+
+    const withContext = embeds.setBrandFooter(new EmbedBuilder(), config, '1/2').toJSON();
+    assert.ok(withContext.footer.text.startsWith('1/2'), withContext.footer.text);
+    assert.ok(withContext.footer.text.includes('built for chaos333 community'));
+
+    // Blank BRAND_FOOTER must leave the footer unset rather than null, which
+    // discord.js rejects.
+    const off = embeds.setBrandFooter(new EmbedBuilder(), { brandFooter: '' }).toJSON();
+    assert.strictEqual(off.footer, undefined);
+    const offWithContext = embeds.setBrandFooter(new EmbedBuilder(), { brandFooter: '' }, '1/2').toJSON();
+    assert.strictEqual(offWithContext.footer.text, '1/2');
   });
 
   console.log(lines.splice(0).join('\n'));
@@ -350,7 +378,11 @@ const cmd = (name) => require(`../src/commands/${name}`);
   await test('/play queues a search result and reports its position', async () => {
     const i = makeInteraction({ options: { query: 'some song' } });
     await cmd('play.js').execute(i, ctx);
-    assert.match(text(i), /Queued/);
+    // Assert on what the user is told, not on the wording, so the embed can be
+    // restyled without breaking the test.
+    const reply = text(i);
+    assert.match(reply, /Result for some song/, `title missing: ${reply}`);
+    assert.match(reply, /#3/, `queue position missing: ${reply}`);
     assert.strictEqual(player.queue.tracks.length, 3);
   });
 
