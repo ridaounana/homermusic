@@ -25,6 +25,10 @@ const config = {
   token: process.env.DISCORD_TOKEN || '',
   clientId: process.env.CLIENT_ID || '',
   guildId: process.env.GUILD_ID || '',
+  // GUILD_ID accepts several ids, so a bot in more than one server can register
+  // to all of them instantly instead of waiting on global propagation.
+  guildIds: String(process.env.GUILD_ID || '')
+    .split(/[\s,]+/).map((s) => s.trim()).filter(Boolean),
 
   botName: process.env.BOT_NAME || 'Music',
   // Every command is registered under this one name, so a server full of music

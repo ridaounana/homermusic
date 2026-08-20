@@ -94,7 +94,8 @@ cd ~ && git clone <your-repo> music-bot   # or scp the folder up
 cd music-bot
 npm install --omit=dev
 cp .env.example .env && nano .env          # token, client id, lavalink password
-npm run deploy                             # register slash commands
+npm run deploy                             # register to the servers in GUILD_ID
+# npm run deploy -- --global              # or register everywhere (up to 1h)
 ```
 
 Run it under pm2 so it survives reboots:
@@ -184,7 +185,7 @@ sudo systemctl restart lavalink
 | `Connection refused 127.0.0.1:2333` | Lavalink not running | `systemctl status lavalink`, check `journalctl -u lavalink -n 50` |
 | Node connects, all searches return nothing | plugin failed to load | check Lavalink startup log for plugin download errors |
 | Bot joins but there is silence | wrong Discord voice region or firewall blocking UDP | allow outbound UDP; try another voice region on the channel |
-| Commands do not appear | not registered, or global propagation delay | run `npm run deploy` with `GUILD_ID` set for instant registration |
+| Commands do not appear | not registered in that server | `GUILD_ID` takes a comma-separated list — add the server id and re-run `npm run deploy`, or use `--global` |
 | `Missing Access` on join | bot lacks Connect/Speak in that channel | fix channel permission overrides |
 | Audio stutters | CPU or bandwidth saturated | lower `opusEncodingQuality`, raise `bufferDurationMs`, or move to a bigger box |
 | YouTube tracks fail to load, others work | YouTube changed something | update the youtube-source plugin to its newest release |
