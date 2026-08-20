@@ -66,36 +66,63 @@ fails with that message rather than letting the API reject it opaquely.
 
 ## Playing in more than one channel at once
 
-**Discord allows a bot exactly one voice connection per server.** Homer cannot
-be in two voice channels of the same server at the same time, and no setting
-changes that — it is how Discord works, and it is why the big music bots ship
-as "Name (1)", "Name (2)" and so on.
+**Discord allows a bot exactly one voice connection per server**, and has no API
+to create a bot application. Serving two channels at once therefore needs two
+bot *accounts*, provisioned by hand. It is why the big music bots ship as
+"Name (1)", "Name (2)".
 
-If someone asks for music while a session is running elsewhere, Homer says which
-channel is busy and how many people are listening, rather than silently queueing
-into a channel they are not in. If that channel has emptied out, it moves to
-them instead.
+Homer pools them. One process runs every account, and `src/fleet.js` decides
+which one serves a request:
 
-To genuinely serve two channels at once, run a second instance:
+```
+/homer play  in #Gaming
+  -> who is already in #Gaming?   nobody
+  -> who is free in this server?  Homer 2
+  -> Homer 2 joins #Gaming and plays
+```
 
-1. Create a second application in the Discord Developer Portal, get its token,
-   and invite it to the server.
-2. Copy `.env` to `.env.2` and change **at least** these:
+Only the primary registers the slash commands, so the picker stays clean and
+nobody has to know which account they are talking to. Every command is routed
+to the instance that owns **the caller's own voice channel**, which is what
+stops one person stopping music they are not listening to:
 
-   ```ini
-   DISCORD_TOKEN=<the second bot's token>
-   CLIENT_ID=<the second bot's application id>
-   COMMAND_NAMESPACE=homer2      # or both register /homer and collide
-   DATA_FILE=./data/guilds2.json # or they overwrite each other's settings
-   YT_CACHE_PORT=2445            # one loopback port each
+| You are in | `/homer stop` affects |
+|---|---|
+| #Gaming, with Homer 2 | #Gaming only |
+| #General, with Homer | #General only |
+| no voice channel | nothing — "join a channel first" |
+
+Buttons need no routing: Discord delivers a component interaction to the
+account that posted the message, which is already the one playing.
+
+When every instance is busy the reply says so and names the channels, rather
+than interrupting anyone.
+
+### Adding instances
+
+One Lavalink, one yt-dlp cache and one config serve them all — a track fetched
+for one instance is instant for the others. Each account costs ~50 MB of RAM.
+
+1. Developer Portal → **New Application** → name it `Homer 2` → **Bot** → copy the token
+2. Invite it (no `applications.commands` scope — only the primary has commands):
+
+   ```
+   https://discord.com/oauth2/authorize?client_id=ITS_CLIENT_ID&permissions=3230720&scope=bot
    ```
 
-3. `pm2 start ecosystem.config.js` — `.env.2`, `.env.3` … are picked up
-   automatically as `music-bot-2`, `music-bot-3`. Then run
-   `ENV_FILE=$PWD/.env.2 npm run deploy` to register its commands.
+3. Add the token to `fleet.json` beside `.env` (gitignored, chmod 600):
 
-One Lavalink serves them all; only the Discord gateway connection has to be
-separate. Each instance costs about 100 MB of RAM.
+   ```json
+   [
+     { "token": "…", "name": "Homer 2" },
+     { "token": "…", "name": "Homer 3" }
+   ]
+   ```
+
+4. Restart. The startup log reports how many came up.
+
+A bad token is skipped with a warning rather than stopping the rest. With no
+`fleet.json` at all Homer runs as a single bot, exactly as before.
 
 ## How playlists are handled
 
@@ -174,7 +201,7 @@ commands and buttons.
 
 ```bash
 npm run check      # parses every file, validates all 25 command definitions
-npm run simulate   # 108 offline logic tests against a fake player
+npm run simulate   # 115 offline logic tests against a fake player
 ```
 
 The simulation stubs discord.js and lavalink-client, so it runs with no token

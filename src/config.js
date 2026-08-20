@@ -26,6 +26,36 @@ loadEnvFile(process.env.ENV_FILE
 const num = (v, d) => (Number.isFinite(Number(v)) ? Number(v) : d);
 const bool = (v, d) => (v === undefined ? d : /^(1|true|yes|on)$/i.test(String(v)));
 
+
+/**
+ * Extra bot accounts, for serving more than one voice channel at once.
+ *
+ * Discord allows a bot one voice connection per server and has no API to
+ * create an application, so these are provisioned by hand and listed here.
+ * Accepts ["token", ...] or [{ "token": "...", "name": "Homer 2" }, ...].
+ * Kept out of .env because tokens are secrets and this file is gitignored.
+ */
+function loadFleet(file) {
+  const fromEnv = String(process.env.FLEET_TOKENS || '')
+    .split(/[\s,]+/).map((t) => t.trim()).filter(Boolean)
+    .map((token) => ({ token, name: '' }));
+  if (fromEnv.length) return fromEnv;
+
+  try {
+    if (!fs.existsSync(file)) return [];
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .map((entry) => (typeof entry === 'string'
+        ? { token: entry.trim(), name: '' }
+        : { token: String(entry?.token || '').trim(), name: String(entry?.name || '') }))
+      .filter((entry) => entry.token);
+  } catch (err) {
+    console.error(`[config] could not read ${file}:`, err?.message || err);
+    return [];
+  }
+}
+
 const config = {
   token: process.env.DISCORD_TOKEN || '',
   clientId: process.env.CLIENT_ID || '',
@@ -88,6 +118,9 @@ const config = {
     clientSecret: process.env.SPOTIFY_CLIENT_SECRET || '',
     market: process.env.SPOTIFY_MARKET || 'FR',
   },
+
+  // Additional bot accounts. Empty means the single-bot behaviour.
+  fleet: loadFleet(process.env.FLEET_FILE || path.resolve(process.cwd(), 'fleet.json')),
 
   dataFile: process.env.DATA_FILE || path.resolve(process.cwd(), 'data', 'guilds.json'),
 

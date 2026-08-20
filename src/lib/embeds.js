@@ -77,7 +77,14 @@ function nowPlaying(config, player, track) {
       `-# ${truncate(info.author || 'Unknown', 60)}\n\n` +
       `${timeline}\n\n` +
       `${stats}\n` +
-      (track?.requester ? `-# requested by <@${track.requester.id}>\n` : '') +
+      // With several bot accounts pooled, saying which one is playing makes the
+      // channel-to-instance mapping visible instead of guesswork.
+      (track?.requester || player?.get?.('instanceName')
+        ? `-# ${[
+          track?.requester ? `requested by <@${track.requester.id}>` : null,
+          player?.get?.('instanceName') || null,
+        ].filter(Boolean).join('  ·  ')}\n`
+        : '') +
       (upNext
         ? `\n**⏭  Up next**\n${trackLink(upNext)}` +
           (queueLen > 1 ? `\n-# and ${queueLen - 1} more in the queue` : '')

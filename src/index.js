@@ -1,11 +1,11 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const { Client, GatewayIntentBits, Collection, Events } = require('discord.js');
+const { Collection, Events } = require('discord.js');
 
 const { config, validate } = require('./config');
 const { Store } = require('./store');
-const { setupLavalink } = require('./lavalink');
+const { Fleet } = require('./fleet');
 const { handleInteraction } = require('./interactions');
 const { YoutubeAudioCache } = require('./lib/ytdlp');
 const { createCacheServer } = require('./lib/ytserve');
@@ -15,19 +15,10 @@ const { SpotifyClient } = require('./lib/spotify');
 
 validate();
 
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildVoiceStates, // required to see who is in voice
-  ],
-});
-
 const store = new Store(config.dataFile);
-client.config = config;
-client.store = store;
-client.commands = new Collection();
 
 // ------------------------------------------------------------ command loading
+const commands = new Collection();
 const commandsDir = path.join(__dirname, 'commands');
 const commandFiles = fs.readdirSync(commandsDir)
   .filter((f) => f.endsWith('.js') && !f.startsWith('_')); // _shared.js is a helper, not a command
@@ -37,13 +28,12 @@ for (const file of commandFiles) {
     console.warn(`[commands] skipping ${file}: missing "data" or "execute"`);
     continue;
   }
-  client.commands.set(command.data.name, command);
+  commands.set(command.data.name, command);
 }
-console.log(`[commands] loaded ${client.commands.size}`);
+console.log(`[commands] loaded ${commands.size}`);
 
 // ------------------------------------------------------- yt-dlp audio cache
-// Only wired up when a yt-dlp binary is actually configured; without it the
-// bot behaves exactly as before and simply falls back to another source.
+// Shared by every instance: a track fetched for one is instant for the others.
 let ytCache = null;
 let ytServer = null;
 if (config.ytdlp.enabled && config.ytdlp.bin) {
@@ -66,30 +56,28 @@ if (config.ytdlp.enabled && config.ytdlp.bin) {
   }
 }
 
+ytbridge.configure({ cache: ytCache, server: ytServer, mode: config.ytdlp.youtubeMode });
+if (ytCache) console.log(`[ytbridge] youtube audio via yt-dlp: ${config.ytdlp.youtubeMode}`);
+
 // ------------------------------------------------------------------ spotify
-// Album metadata only. LavaSrc handles Spotify links itself, but its album
-// path calls a batch endpoint Spotify now forbids, so /play falls back to this.
-client.spotify = new SpotifyClient({
+const spotify = new SpotifyClient({
   clientId: config.spotify.clientId,
   clientSecret: config.spotify.clientSecret,
   market: config.spotify.market,
 });
-if (client.spotify.enabled()) console.log('[spotify] album lookup enabled');
+if (spotify.enabled()) console.log('[spotify] album lookup enabled');
 
-// Lets the resolver reach yt-dlp, so a YouTube track can be fetched before
-// playback is attempted once YouTube starts refusing this host.
-ytbridge.configure({ cache: ytCache, server: ytServer, mode: config.ytdlp.youtubeMode });
-if (ytCache) console.log(`[ytbridge] youtube audio via yt-dlp: ${config.ytdlp.youtubeMode}`);
-
-setupLavalink(client, { config, store, ytCache, ytServer });
+// -------------------------------------------------------------------- fleet
+// One process, several bot accounts. Discord allows a bot one voice connection
+// per server, so serving two channels at once needs two accounts.
+const fleet = new Fleet({ config, store, ytCache, ytServer, commands, spotify });
 
 // ----------------------------------------------------------------- presence
 // Discord drops the presence whenever a shard reconnects and never restores it,
 // so setting it once at startup leaves the bot blank after the first hiccup.
-// It is re-applied on resume and on a slow timer.
-function applyPresence() {
+function applyPresence(client) {
   const payload = buildPresence(config);
-  if (!payload || !client.user) return;
+  if (!payload || !client?.user) return;
   try {
     client.user.setPresence(payload);
   } catch (e) {
@@ -99,33 +87,15 @@ function applyPresence() {
 
 let presenceTimer = null;
 
-// ------------------------------------------------------------------- events
-client.once(Events.ClientReady, async (c) => {
-  console.log(`[bot] logged in as ${c.user.tag}`);
-  await client.lavalink.init({ id: c.user.id, username: c.user.username });
-
-  applyPresence();
-  if (config.presence.text) {
-    console.log(`[bot] presence: ${config.presence.type} "${config.presence.text}"`);
-    if (config.presence.refreshMs > 0) {
-      presenceTimer = setInterval(applyPresence, config.presence.refreshMs);
-      if (presenceTimer.unref) presenceTimer.unref();
-    }
-  }
-});
-
-client.on(Events.ShardResume, applyPresence);
-client.on(Events.ShardReady, applyPresence);
-
-client.on(Events.InteractionCreate, (interaction) => handleInteraction(client, interaction));
-
 /**
  * Leave when the voice channel empties out, and cancel that timer if someone
- * comes back. Without this the bot sits in an empty channel burning bandwidth.
+ * comes back. Without this an instance sits in an empty channel burning
+ * bandwidth - and, now that instances are pooled, stays unavailable to whoever
+ * wants one next.
  */
-client.on(Events.VoiceStateUpdate, (oldState, newState) => {
-  const guildId = oldState.guild?.id || newState.guild?.id;
-  const player = client.lavalink?.getPlayer?.(guildId);
+function watchEmptyChannel(instance, oldState) {
+  const guildId = oldState.guild?.id;
+  const player = instance.manager?.getPlayer?.(guildId);
   if (!player) return;
 
   const settings = store.guild(guildId);
@@ -143,7 +113,7 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
       const stillEmpty = channel.members.filter((m) => !m.user.bot).size === 0;
       if (!stillEmpty) return;
       try {
-        const text = await client.channels.fetch(player.textChannelId).catch(() => null);
+        const text = await instance.client.channels.fetch(player.textChannelId).catch(() => null);
         await text?.send?.({ content: '👋 Left the channel — everyone was gone.' });
       } catch { /* channel may be gone */ }
       player.destroy().catch(() => {});
@@ -154,18 +124,43 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
     clearTimeout(existingTimer);
     player.set('emptyTimer', null);
   }
-});
+}
+
+(async () => {
+  const started = await fleet.start({
+    onInteraction: (instance, interaction) => handleInteraction(instance, interaction, { fleet }),
+  });
+
+  if (!started) {
+    console.error('[fleet] no bot account could log in — check DISCORD_TOKEN');
+    process.exit(1);
+  }
+
+  for (const instance of fleet.instances) {
+    instance.client.once(Events.ClientReady, () => applyPresence(instance.client));
+    instance.client.on(Events.ShardResume, () => applyPresence(instance.client));
+    instance.client.on(Events.ShardReady, () => applyPresence(instance.client));
+    instance.client.on(Events.VoiceStateUpdate, (oldState) => watchEmptyChannel(instance, oldState));
+  }
+
+  if (config.presence.text && config.presence.refreshMs > 0) {
+    presenceTimer = setInterval(
+      () => fleet.instances.forEach((i) => applyPresence(i.client)),
+      config.presence.refreshMs,
+    );
+    if (presenceTimer.unref) presenceTimer.unref();
+  }
+
+  console.log(`[fleet] ${started} instance(s) online — up to ${started} voice channel(s) per server`);
+})();
 
 // ------------------------------------------------------------------ shutdown
 function shutdown(signal) {
   console.log(`[bot] ${signal} received, shutting down`);
   try { store.flush(); } catch { /* ignore */ }
-  try {
-    for (const player of client.lavalink?.players?.values?.() || []) player.destroy().catch(() => {});
-  } catch { /* ignore */ }
   try { if (presenceTimer) clearInterval(presenceTimer); } catch { /* ignore */ }
+  try { fleet.destroyAll(); } catch { /* ignore */ }
   try { ytServer?.close?.(); } catch { /* ignore */ }
-  client.destroy();
   process.exit(0);
 }
 process.once('SIGINT', () => shutdown('SIGINT'));
@@ -173,5 +168,3 @@ process.once('SIGTERM', () => shutdown('SIGTERM'));
 
 process.on('unhandledRejection', (err) => console.error('[bot] unhandled rejection:', err));
 process.on('uncaughtException', (err) => console.error('[bot] uncaught exception:', err));
-
-client.login(config.token);

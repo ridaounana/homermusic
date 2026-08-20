@@ -64,8 +64,11 @@ async function queueCollection(interaction, ctx, { player, query, playNext }) {
 
   // Spotify entries are names, so each becomes a track that matches itself on
   // YouTube at play time. One request now instead of a search per track.
+  // The player may belong to another fleet instance, so build tracks with its
+  // manager rather than the one that happened to receive the command.
+  const manager = player.LavalinkManager || client.lavalink;
   const queued = collection.needsMatching
-    ? wanted.map((t) => buildSmartTrack(client.lavalink, {
+    ? wanted.map((t) => buildSmartTrack(manager, {
       title: t.title,
       author: t.author,
       duration: t.duration,
@@ -76,7 +79,7 @@ async function queueCollection(interaction, ctx, { player, query, playNext }) {
     // us right now" decision to the moment each track plays, so a blocked host
     // is handled before playback rather than after it fails and reorders the
     // playlist.
-    : wanted.map((t) => wrapYoutubeTrack(client.lavalink, t, interaction.user));
+    : wanted.map((t) => wrapYoutubeTrack(manager, t, interaction.user));
 
   await player.queue.add(queued, playNext ? 0 : undefined);
 
@@ -89,7 +92,10 @@ async function queueCollection(interaction, ctx, { player, query, playNext }) {
 
   await interaction.editReply({
     embeds: [embeds.addedPlaylist(config, label, wanted, {
-      subtitle: collection.kind === 'radio' ? 'YouTube mix' : `${collection.service} ${collection.kind}`,
+      subtitle: [
+        collection.kind === 'radio' ? 'YouTube mix' : `${collection.service} ${collection.kind}`,
+        player.get('instanceName') ? `played by ${player.get('instanceName')}` : null,
+      ].filter(Boolean).join(' · '),
       source: SOURCE_LABEL[collection.service] || null,
       artworkUrl: collection.artworkUrl,
       note: notes.length ? notes.join(' · ') : null,

@@ -14,12 +14,33 @@ function fail(interaction, config, message) {
 }
 
 /**
+ * The player this command should act on.
+ *
+ * With a fleet, "the player for this guild" is ambiguous - there can be one per
+ * channel. The caller's own voice channel picks it, so a command can never
+ * reach a session someone else is listening to. Without a fleet this is exactly
+ * the old behaviour.
+ */
+function resolvePlayer(interaction, { client, fleet }) {
+  const voiceChannelId = interaction.member?.voice?.channel?.id;
+  if (fleet) {
+    const found = fleet.playerFor(interaction.guildId, voiceChannelId);
+    return found?.player || null;
+  }
+  return client.lavalink.getPlayer(interaction.guildId);
+}
+
+/**
  * The standard preamble for every playback command:
  * resolve the player, verify the caller may control it, and hand both back.
  * Returns null if it already replied with an error.
  */
-async function requirePlayer(interaction, { client, config, store }, options = {}) {
-  const player = client.lavalink.getPlayer(interaction.guildId);
+async function requirePlayer(interaction, ctx, options = {}) {
+  const { client, config, store, fleet } = ctx;
+  // Which session this command acts on is decided by the caller's own voice
+  // channel, not by the guild. With several instances running, resolving by
+  // guild would let somebody in one channel stop the music in another.
+  const player = resolvePlayer(interaction, ctx);
   const settings = store.guild(interaction.guildId);
   const denied = checkControl(interaction, player, settings, options);
   if (denied) {
@@ -40,8 +61,50 @@ async function requirePlayer(interaction, { client, config, store }, options = {
  * If everyone has left the channel the bot is sitting in, it follows the caller
  * instead: nobody is listening there, so there is nothing to interrupt.
  */
-async function getOrCreatePlayer(interaction, { client, config, store }) {
+async function getOrCreatePlayer(interaction, ctx) {
+  const { client, config, store, fleet } = ctx;
   const voice = interaction.member?.voice?.channel;
+
+  // ------------------------------------------------------------- with a fleet
+  if (fleet) {
+    const instance = fleet.acquire(interaction.guildId, voice?.id);
+    if (!instance) {
+      const busy = fleet.busyChannels(interaction.guildId)
+        .map((b) => `<#${b.channelId}>`)
+        .join(', ');
+      throw new Error(
+        `All ${fleet.size} instances are in use${busy ? ` — ${busy}` : ''}. `
+        + 'Discord allows a bot one voice channel per server, so one has to '
+        + 'finish before another channel can start.',
+      );
+    }
+
+    const existing = instance.manager.getPlayer(interaction.guildId);
+    if (existing && existing.voiceChannelId === voice?.id) return existing;
+    if (!voice) return null;
+
+    const problem = botCanJoin(voice, interaction.guild.members.me);
+    if (problem) throw new Error(problem);
+
+    const settings = store.guild(interaction.guildId);
+    const player = existing || instance.manager.createPlayer({
+      guildId: interaction.guildId,
+      voiceChannelId: voice.id,
+      textChannelId: interaction.channelId,
+      selfDeaf: true,
+      selfMute: false,
+      volume: settings.defaultVolume ?? config.player.defaultVolume,
+    });
+    // acquire() only hands back an instance that is free or already here, so
+    // this can move an idle one to the caller without interrupting anybody.
+    player.voiceChannelId = voice.id;
+    player.textChannelId = interaction.channelId;
+    if (!player.connected) await player.connect();
+    player.set('instanceName', instance.name);
+    return player;
+  }
+
+  // --------------------------------------------------- single bot, as before
   const existing = client.lavalink.getPlayer(interaction.guildId);
 
   if (existing) {
@@ -59,7 +122,6 @@ async function getOrCreatePlayer(interaction, { client, config, store }) {
       );
     }
 
-    // Abandoned session: move rather than refuse.
     if (voice) {
       const problem = botCanJoin(voice, interaction.guild.members.me);
       if (problem) throw new Error(problem);
@@ -90,4 +152,4 @@ async function getOrCreatePlayer(interaction, { client, config, store }) {
   return player;
 }
 
-module.exports = { EPHEMERAL, fail, requirePlayer, getOrCreatePlayer };
+module.exports = { EPHEMERAL, fail, requirePlayer, getOrCreatePlayer, resolvePlayer };

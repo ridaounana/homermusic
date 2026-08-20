@@ -416,6 +416,100 @@ const cmd = (name) => require(`../src/commands/${name}`);
   });
 
   console.log(lines.splice(0).join('\n'));
+  console.log('\nFLEET ROUTING');
+
+  const { Fleet } = require('../src/fleet');
+  const shared2 = require('../src/commands/_shared');
+
+  // A fleet without logging anything in: instances are plain objects holding a
+  // manager, and only getPlayer is needed to decide routing.
+  function fakeFleet(layout) {
+    const f = Object.create(Fleet.prototype);
+    f.config = config;
+    f.instances = layout.map((entry, i) => ({
+      index: i,
+      primary: i === 0,
+      name: entry.name || `Homer ${i + 1}`,
+      ready: true,
+      client: {},
+      manager: {
+        getPlayer: (gid) => (entry.channel && gid === 'g1'
+          ? { voiceChannelId: entry.channel, guildId: gid, _name: entry.name }
+          : null),
+      },
+    }));
+    return f;
+  }
+
+  const inChannel = (id) => ({
+    guildId: 'g1',
+    channelId: 'tc1',
+    member: { voice: { channel: id ? { id } : null } },
+  });
+
+  await test('a command acts on the session in your own channel', () => {
+    const f = fakeFleet([
+      { name: 'Homer', channel: 'vcA' },
+      { name: 'Homer 2', channel: 'vcB' },
+    ]);
+    assert.strictEqual(f.playerFor('g1', 'vcA').instance.name, 'Homer');
+    assert.strictEqual(f.playerFor('g1', 'vcB').instance.name, 'Homer 2');
+  });
+
+  await test('you cannot reach a session you are not listening to', () => {
+    // The whole point: someone in #B running /stop must not stop #A's music.
+    const f = fakeFleet([
+      { name: 'Homer', channel: 'vcA' },
+      { name: 'Homer 2', channel: 'vcB' },
+    ]);
+    const player = shared2.resolvePlayer(inChannel('vcB'), { fleet: f });
+    assert.strictEqual(player.voiceChannelId, 'vcB', 'resolves to your own channel only');
+
+    // Not in any voice channel, with two running: ambiguous, so nothing.
+    assert.strictEqual(shared2.resolvePlayer(inChannel(null), { fleet: f }), null);
+  });
+
+  await test('with one session running, a text-only command still finds it', () => {
+    // /queue and /nowplaying from a text channel should keep working on a
+    // quiet server, where there is no ambiguity to resolve.
+    const f = fakeFleet([{ name: 'Homer', channel: 'vcA' }, { name: 'Homer 2' }]);
+    assert.strictEqual(shared2.resolvePlayer(inChannel(null), { fleet: f }).voiceChannelId, 'vcA');
+  });
+
+  await test('a free instance is handed out for a new channel', () => {
+    const f = fakeFleet([
+      { name: 'Homer', channel: 'vcA' },
+      { name: 'Homer 2' },
+      { name: 'Homer 3' },
+    ]);
+    assert.strictEqual(f.acquire('g1', 'vcC').name, 'Homer 2', 'the first free one');
+    // Asking again from a channel that already has one returns that one.
+    assert.strictEqual(f.acquire('g1', 'vcA').name, 'Homer', 'never steals an in-use instance');
+  });
+
+  await test('when every instance is busy, nothing is stolen', () => {
+    const f = fakeFleet([
+      { name: 'Homer', channel: 'vcA' },
+      { name: 'Homer 2', channel: 'vcB' },
+    ]);
+    assert.strictEqual(f.acquire('g1', 'vcC'), null, 'must refuse rather than interrupt someone');
+    assert.deepStrictEqual(f.busyChannels('g1').map((b) => b.channelId), ['vcA', 'vcB']);
+  });
+
+  await test('instances are only busy in the guild they are playing in', () => {
+    // One account serves many servers; only the voice connection is per-guild.
+    const f = fakeFleet([{ name: 'Homer', channel: 'vcA' }]);
+    assert.strictEqual(f.acquire('g1', 'vcZ'), null, 'busy in g1');
+    assert.strictEqual(f.acquire('g2', 'vcZ').name, 'Homer', 'free in g2');
+  });
+
+  await test('without a fleet the single-bot behaviour is unchanged', () => {
+    const player = makePlayer([]);
+    const client = { lavalink: { getPlayer: () => player } };
+    assert.strictEqual(shared2.resolvePlayer(inChannel('vcA'), { client }), player);
+  });
+
+  console.log(lines.splice(0).join('\n'));
   console.log('\nONE VOICE CHANNEL PER SERVER');
 
   const shared = require('../src/commands/_shared');

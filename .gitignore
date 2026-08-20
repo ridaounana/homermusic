@@ -5,3 +5,7 @@ logs/
 Lavalink.jar
 plugins/
 *.log
+
+# Extra bot accounts live in fleet.json (tokens - never commit)
+fleet.json
+fleet*.json

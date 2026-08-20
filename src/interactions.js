@@ -8,7 +8,15 @@ const { resolveCommandName, commandPath } = require('./lib/namespace');
 
 const EPHEMERAL = { flags: MessageFlags.Ephemeral };
 
-async function handleInteraction(client, interaction) {
+/**
+ * `instance` is the fleet member that received this interaction. Commands only
+ * exist on the primary, so a slash command always arrives there and is routed
+ * from inside the command to whichever instance owns the caller's channel.
+ * Buttons arrive at the instance that posted the message, which is already the
+ * one playing, so they act on their own player directly.
+ */
+async function handleInteraction(instance, interaction, { fleet = null } = {}) {
+  const client = instance.client || instance; // tolerate a bare client in tests
   const { config, store } = client;
 
   try {
@@ -17,12 +25,12 @@ async function handleInteraction(client, interaction) {
       // by subcommand rather than by the command name itself.
       const command = client.commands.get(resolveCommandName(interaction, config.commandNamespace));
       if (!command) return;
-      return await command.execute(interaction, { client, config, store });
+      return await command.execute(interaction, { client, config, store, fleet, instance });
     }
 
     if (interaction.isAutocomplete()) {
       const command = client.commands.get(resolveCommandName(interaction, config.commandNamespace));
-      if (command?.autocomplete) return await command.autocomplete(interaction, { client, config, store });
+      if (command?.autocomplete) return await command.autocomplete(interaction, { client, config, store, fleet, instance });
       return;
     }
 
