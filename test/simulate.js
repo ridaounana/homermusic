@@ -202,6 +202,116 @@ const cmd = (name) => require(`../src/commands/${name}`);
   });
 
   console.log(lines.splice(0).join('\n'));
+  console.log('\nPLAYLIST ROUTING');
+
+  const playlist = require('../src/lib/playlist');
+  const ytbridge = require('../src/lib/ytbridge');
+
+  await test('every playlist link shape is recognised', () => {
+    const d = playlist.detect;
+    assert.deepStrictEqual(d('https://open.spotify.com/playlist/37i9dQZF1E3adKldZwVACA?si=5b2'),
+      { service: 'spotify', kind: 'playlist', id: '37i9dQZF1E3adKldZwVACA', url: 'https://open.spotify.com/playlist/37i9dQZF1E3adKldZwVACA?si=5b2' });
+    assert.strictEqual(d('https://open.spotify.com/intl-fr/album/4m2880jivSbbyEGAKfITCa').kind, 'album');
+
+    // The url actually pasted: a watch link carrying an auto-generated station.
+    const radio = d('https://www.youtube.com/watch?v=huDIUguVJ8I&list=RDhuDIUguVJ8I&start_radio=1');
+    assert.strictEqual(radio.service, 'youtube');
+    assert.strictEqual(radio.kind, 'radio', 'RD… is a station, worth labelling as one');
+    assert.strictEqual(radio.id, 'RDhuDIUguVJ8I');
+
+    assert.strictEqual(d('https://www.youtube.com/playlist?list=PLabc123').kind, 'playlist');
+    assert.strictEqual(d('https://music.youtube.com/playlist?list=OLAK5uy_abc').service, 'youtube');
+  });
+
+  await test('a plain track or search is not treated as a playlist', () => {
+    for (const q of [
+      'never gonna give you up',
+      'https://www.youtube.com/watch?v=dQw4w9WgXcQ',      // no list=
+      'https://open.spotify.com/track/0DiWol3AO6WpXZgp0goxAV',
+      'https://soundcloud.com/artist/track',
+      '',
+    ]) {
+      assert.strictEqual(playlist.detect(q), null, `should not match: ${q}`);
+    }
+  });
+
+  await test('a YouTube playlist is queued as-is, with no matching', async () => {
+    const player = {
+      async search() {
+        return {
+          loadType: 'playlist',
+          playlist: { name: 'Mix - SMALL X - DIKEÇ #1' },
+          tracks: [makeTrack('DIKEÇ #1'), makeTrack('XCALIBUR')],
+        };
+      },
+    };
+    const got = await playlist.resolve(
+      'https://www.youtube.com/watch?v=huDIUguVJ8I&list=RDhuDIUguVJ8I', { player });
+    assert.strictEqual(got.service, 'youtube');
+    assert.strictEqual(got.name, 'Mix - SMALL X - DIKEÇ #1');
+    assert.strictEqual(got.tracks.length, 2);
+    assert.strictEqual(got.needsMatching, false, 'YouTube tracks are already playable');
+  });
+
+  await test('a Spotify playlist comes back as names needing a match', async () => {
+    // readEmbed reads Spotify's public widget; stub the fetch it uses.
+    const entity = {
+      name: 'Daily Mix 2',
+      coverArt: { sources: [{ url: 'https://i.scdn.co/x' }] },
+      trackList: [{ title: 'Pyramide', subtitle: 'Werenoi, Damso', duration: 150000, uri: 'spotify:track:aaa' }],
+    };
+    const real = global.fetch;
+    global.fetch = async () => ({
+      ok: true,
+      text: async () => '<script id="__NEXT_DATA__" type="application/json">'
+        + JSON.stringify({ props: { pageProps: { state: { data: { entity } } } } }) + '</script>',
+    });
+    try {
+      const got = await playlist.resolve('https://open.spotify.com/playlist/37i9dQZF1E3adKldZwVACA');
+      assert.strictEqual(got.service, 'spotify');
+      assert.strictEqual(got.needsMatching, true, 'Spotify gives names, not playable audio');
+      assert.strictEqual(got.tracks[0].title, 'Pyramide');
+      assert.strictEqual(got.tracks[0].author, 'Werenoi, Damso');
+    } finally { global.fetch = real; }
+  });
+
+  await test('the queued embed lists the tracks, not just a count', () => {
+    const tracks = Array.from({ length: 12 }, (_, i) => ({ title: `Song ${i + 1}`, author: 'Artist', duration: 60000 }));
+    const json = embeds.addedPlaylist(config, 'Daily Mix 2', tracks, { subtitle: 'spotify playlist' }).toJSON();
+    assert.match(json.description, /Song 1/);
+    assert.match(json.description, /Song 8/);
+    assert.ok(!/Song 9\b/.test(json.description), 'only a preview is listed');
+    assert.match(json.description, /and 4 more/, 'the remainder is counted');
+    assert.match(json.description, /12 tracks/);
+  });
+
+  await test('YouTube is only bypassed after it fails repeatedly', () => {
+    const s = ytbridge._state;
+    s.failures = 0; s.degradedSince = 0;
+    assert.strictEqual(ytbridge.degraded(), false, 'healthy by default');
+
+    ytbridge.recordFailure();
+    assert.strictEqual(ytbridge.degraded(), false, 'one bad video is not a blocked host');
+    ytbridge.recordFailure();
+    assert.strictEqual(ytbridge.degraded(), true, 'repeated refusals mean fetch up front instead');
+
+    ytbridge.recordSuccess();
+    assert.strictEqual(ytbridge.degraded(), false, 'a success clears it');
+
+    // The block is temporary, so the direct path is retried after a while.
+    ytbridge.recordFailure(); ytbridge.recordFailure();
+    s.degradedSince = Date.now() - ytbridge.RECHECK_AFTER_MS - 1000;
+    assert.strictEqual(ytbridge.degraded(), false, 'should re-test once the window passes');
+    s.failures = 0; s.degradedSince = 0;
+  });
+
+  await test('without yt-dlp configured nothing changes', async () => {
+    ytbridge.configure({ cache: null, server: null });
+    assert.strictEqual(ytbridge.ready(), false);
+    assert.strictEqual(await ytbridge.toLocalTrack({}, makeTrack('x')), null);
+  });
+
+  console.log(lines.splice(0).join('\n'));
   console.log('\nONE VOICE CHANNEL PER SERVER');
 
   const shared = require('../src/commands/_shared');

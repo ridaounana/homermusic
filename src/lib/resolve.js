@@ -1,6 +1,7 @@
 'use strict';
 const { TrackSymbol, UnresolvedTrackSymbol } = require('lavalink-client');
 const { pickBest, queries } = require('./match');
+const ytbridge = require('./ytbridge');
 
 /**
  * Builds a queued track that finds the right recording when it plays.
@@ -42,12 +43,23 @@ function buildSmartTrack(manager, want, requester, { search = null } = {}) {
       const best = pickBest(want, result?.tracks || []);
       if (!best) continue;
 
+      // When YouTube is refusing this host, fetch the file up front rather than
+      // letting playback fail and recovering afterwards. Recovering works, but
+      // it costs an exception, a queue advance and a replacement per track -
+      // which on a long playlist is what looked like skipping and spam.
+      let chosen = best;
+      if (ytbridge.ready() && ytbridge.degraded()) {
+        const local = await ytbridge.toLocalTrack(player, best, { info: { ...want } })
+          .catch(() => null);
+        if (local) chosen = local;
+      }
+
       // Same in-place swap the library performs: the queue holds this object,
       // so it has to become the resolved track rather than be replaced.
       for (const prop of Object.getOwnPropertyNames(this)) delete this[prop];
       delete this[UnresolvedTrackSymbol];
       Object.defineProperty(this, TrackSymbol, { configurable: true, value: true });
-      Object.assign(this, best);
+      Object.assign(this, chosen);
 
       // Keep the artwork Spotify gave us; a YouTube match often has none.
       if (want.artworkUrl && this.info && !this.info.artworkUrl) {

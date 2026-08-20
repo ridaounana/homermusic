@@ -109,13 +109,42 @@ function added(config, track, positionInQueue) {
   return embed;
 }
 
-function addedPlaylist(config, playlistName, tracks, { note = null, artworkUrl = null } = {}) {
+// How many of a playlist's tracks to list. Enough to recognise what was
+// queued; the rest is a count, because a 100-track dump is unreadable.
+const PREVIEW = 8;
+
+/**
+ * The reply to queueing a playlist.
+ *
+ * It lists what is actually in it. A bare "50 tracks" gives no way to tell a
+ * correct playlist from a wrong one until the music starts.
+ */
+function addedPlaylist(config, playlistName, tracks, opts = {}) {
+  const {
+    note = null, artworkUrl = null, subtitle = 'playlist', source = null,
+  } = opts;
+
+  const shown = tracks.slice(0, PREVIEW).map((t, i) => {
+    const info = t?.info || t; // may be a plain {title, author} before resolving
+    const title = truncate(info.title || 'Unknown', 46);
+    const author = truncate(info.author || '', 26);
+    return `\`${String(i + 1).padStart(2, ' ')}\`  ${title}${author ? ` -# — ${author}` : ''}`;
+  });
+  const rest = tracks.length - shown.length;
+
+  const total = totalQueueDuration(
+    tracks.map((t) => (t?.info ? t : { info: t })),
+  );
+
   const embed = base(config)
     .setAuthor({ name: '＋   A D D E D   T O   Q U E U E' })
     .setDescription(
       `**${truncate(playlistName, 70)}**\n` +
-      `-# playlist\n\n` +
-      `\`${tracks.length} tracks\`   \`${duration(totalQueueDuration(tracks))}\`` +
+      `-# ${subtitle}\n\n` +
+      shown.join('\n') +
+      (rest > 0 ? `\n-# …and ${rest} more` : '') +
+      `\n\n\`${tracks.length} tracks\`   \`${duration(total)}\`` +
+      (source ? `   ${source}` : '') +
       (note ? `\n-# ${note}` : '')
     );
   setArtwork(embed, artworkUrl);

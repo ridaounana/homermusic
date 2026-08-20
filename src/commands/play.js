@@ -3,7 +3,7 @@ const { SlashCommandBuilder } = require('discord.js');
 const embeds = require('../lib/embeds');
 const { describeFailure } = require('../lib/linkhelp');
 const { fail, getOrCreatePlayer } = require('./_shared');
-const { parseLink, readEmbed } = require('../lib/spotify');
+const { detect, resolve: resolveCollection } = require('../lib/playlist');
 const { buildSmartTrack } = require('../lib/resolve');
 
 const SOURCES = [
@@ -15,60 +15,86 @@ const SOURCES = [
   { name: 'Apple Music', value: 'amsearch' },
 ];
 
+const SOURCE_LABEL = {
+  spotify: '🟢 spotify → matched on YouTube',
+  youtube: '🔴 youtube',
+};
+
 /**
- * Resolves a Spotify album or playlist into queueable tracks.
+ * Queues a playlist or album.
  *
- * Albums go through the Web API first: it gives ISRCs and exact durations.
- * Playlists cannot be read that way at all, and albums fall over on a batch
- * endpoint Spotify forbids, so both fall back to the public embed widget -
- * which is what actually makes playlist links work.
+ * Playlist links are handled before the ordinary search, not after it fails.
+ * Going through the search first meant Lavalink was asked to load a Spotify
+ * playlist it cannot read, and the error path then had to guess what the user
+ * had actually pasted.
  *
- * Tracks are built unresolved: each carries its title and artist and is looked
- * up on the normal search source the moment it plays, so a 100-track playlist
- * costs one request rather than a hundred searches up front.
+ * The two services diverge here, and only here:
  *
- * Returns { name, artist, tracks, truncated } on success, { reason } when a
- * Spotify link cannot be read, or null when it is not a Spotify link.
+ *   Spotify   a list of names. Each becomes a track that looks itself up on
+ *             YouTube when it plays, scored so the official recording wins.
+ *   YouTube   already playable, so the tracks are queued untouched.
+ *
+ * Returns true when it handled the query.
  */
-async function loadSpotifyCollection(client, query, requester) {
-  const link = parseLink(query);
-  if (!link || (link.kind !== 'album' && link.kind !== 'playlist')) return null;
+async function queueCollection(interaction, ctx, { player, query, playNext }) {
+  const { config, client } = ctx;
+  if (!detect(query)) return false;
 
-  let data = null;
+  const collection = await resolveCollection(query, {
+    player,
+    requester: interaction.user,
+  }).catch((err) => {
+    console.error('[play] collection resolve failed:', err?.message || err);
+    return null;
+  });
 
-  if (link.kind === 'album' && client.spotify?.enabled()) {
-    try {
-      data = await client.spotify.album(link.id);
-    } catch (err) {
-      console.warn('[play] spotify album api failed, trying embed:', err?.message || err);
-    }
+  if (!collection) {
+    await fail(interaction, config,
+      describeFailure(query) || 'Could not read that playlist.');
+    return true;
   }
 
-  if (!data) {
-    data = await readEmbed(link.kind, link.id);
+  const room = config.player.maxQueueSize - player.queue.tracks.length;
+  if (room <= 0) {
+    await fail(interaction, config, `Queue is full (${config.player.maxQueueSize} tracks).`);
+    return true;
   }
 
-  if (!data?.tracks?.length) {
-    return {
-      reason: link.kind === 'playlist'
-        ? 'Could not read that Spotify playlist. Private playlists are not visible to bots.'
-        : 'Could not read that Spotify album.',
-    };
-  }
+  const wanted = collection.tracks.slice(0, room);
 
-  // Deliberately built through buildSmartTrack rather than the raw
-  // buildUnresolvedTrack: passing the Spotify uri or sourceName sends
-  // lavalink-client down a branch that plays search result #1 unchecked, which
-  // is how AI covers end up playing instead of the track.
-  const tracks = data.tracks.map((t) => buildSmartTrack(client.lavalink, {
-    title: t.title,
-    author: t.author,
-    duration: t.duration,
-    artworkUrl: t.artworkUrl,
-    isrc: t.isrc,
-  }, requester));
+  // Spotify entries are names, so each becomes a track that matches itself on
+  // YouTube at play time. One request now instead of a search per track.
+  const queued = collection.needsMatching
+    ? wanted.map((t) => buildSmartTrack(client.lavalink, {
+      title: t.title,
+      author: t.author,
+      duration: t.duration,
+      artworkUrl: t.artworkUrl,
+      isrc: t.isrc,
+    }, interaction.user))
+    : wanted;
 
-  return { name: data.name, artist: data.artist, truncated: data.truncated, tracks };
+  await player.queue.add(queued, playNext ? 0 : undefined);
+
+  const label = collection.artist
+    ? `${collection.name} — ${collection.artist}`
+    : collection.name;
+  const notes = [];
+  if (collection.truncated) notes.push('Spotify only exposes the first 100 tracks');
+  if (collection.tracks.length > room) notes.push(`queue limit reached after ${room}`);
+
+  await interaction.editReply({
+    embeds: [embeds.addedPlaylist(config, label, wanted, {
+      subtitle: collection.kind === 'radio' ? 'YouTube mix' : `${collection.service} ${collection.kind}`,
+      source: SOURCE_LABEL[collection.service] || null,
+      artworkUrl: collection.artworkUrl,
+      note: notes.length ? notes.join(' · ') : null,
+    })],
+  });
+
+  if (!player.playing && !player.paused) await player.play();
+  player.textChannelId = interaction.channelId;
+  return true;
 }
 
 module.exports = {
@@ -85,7 +111,7 @@ module.exports = {
     .setDMPermission(false),
 
   async execute(interaction, ctx) {
-    const { config, store, client } = ctx;
+    const { config, store } = ctx;
     await interaction.deferReply();
 
     if (!interaction.member?.voice?.channel) {
@@ -104,6 +130,12 @@ module.exports = {
     const source = interaction.options.getString('source') || config.player.defaultSearch;
     const playNext = interaction.options.getBoolean('next') || false;
 
+    // Playlists and albums take their own route entirely.
+    if (await queueCollection(interaction, ctx, { player, query, playNext })) {
+      store.guild(interaction.guildId);
+      return undefined;
+    }
+
     let result;
     try {
       result = await player.search({ query, source }, interaction.user);
@@ -113,35 +145,14 @@ module.exports = {
     }
 
     if (!result || !result.tracks?.length || result.loadType === 'error') {
-      // LavaSrc cannot read Spotify albums or playlists any more, so resolve
-      // them here before reporting a failure.
-      const collection = await loadSpotifyCollection(client, query, interaction.user);
-      if (collection?.tracks?.length) {
-        const room = config.player.maxQueueSize - player.queue.tracks.length;
-        if (room <= 0) return fail(interaction, config, `Queue is full (${config.player.maxQueueSize} tracks).`);
-        const queued = collection.tracks.slice(0, room);
-        await player.queue.add(queued, playNext ? 0 : undefined);
-        const label = collection.artist
-          ? `${collection.name} — ${collection.artist}`
-          : collection.name;
-        await interaction.editReply({
-          embeds: [embeds.addedPlaylist(config, label, queued, {
-            note: collection.truncated ? 'Spotify only exposes the first 100 tracks' : null,
-          })],
-        });
-        if (!player.playing && !player.paused) await player.play();
-        player.textChannelId = interaction.channelId;
-        return undefined;
-      }
-
-      const why = collection?.reason || describeFailure(query);
-      return fail(interaction, config, why || `No results for **${query}**.`);
+      return fail(interaction, config, describeFailure(query) || `No results for **${query}**.`);
     }
 
     const room = config.player.maxQueueSize - player.queue.tracks.length;
     if (room <= 0) return fail(interaction, config, `Queue is full (${config.player.maxQueueSize} tracks).`);
 
     if (result.loadType === 'playlist') {
+      // A playlist the search turned up on its own - SoundCloud sets, for one.
       const tracks = result.tracks.slice(0, room);
       await player.queue.add(tracks, playNext ? 0 : undefined);
       await interaction.editReply({

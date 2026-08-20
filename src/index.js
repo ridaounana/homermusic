@@ -9,6 +9,7 @@ const { setupLavalink } = require('./lavalink');
 const { handleInteraction } = require('./interactions');
 const { YoutubeAudioCache } = require('./lib/ytdlp');
 const { createCacheServer } = require('./lib/ytserve');
+const ytbridge = require('./lib/ytbridge');
 const { buildPresence } = require('./lib/presence');
 const { SpotifyClient } = require('./lib/spotify');
 
@@ -72,6 +73,10 @@ client.spotify = new SpotifyClient({
   market: config.spotify.market,
 });
 if (client.spotify.enabled()) console.log('[spotify] album lookup enabled');
+
+// Lets the resolver reach yt-dlp, so a YouTube track can be fetched before
+// playback is attempted once YouTube starts refusing this host.
+ytbridge.configure({ cache: ytCache, server: ytServer });
 
 setupLavalink(client, { config, store, ytCache, ytServer });
 

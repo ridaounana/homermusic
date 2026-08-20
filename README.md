@@ -97,6 +97,52 @@ To genuinely serve two channels at once, run a second instance:
 One Lavalink serves them all; only the Discord gateway connection has to be
 separate. Each instance costs about 100 MB of RAM.
 
+## How playlists are handled
+
+The two services need opposite treatment, and mixing them into the generic
+search path is what made playlists unreliable.
+
+**Spotify** — nothing on Spotify is playable by a bot, so a playlist is only a
+list of names.
+
+```
+/play <spotify playlist>
+  -> read the track list from the public embed widget
+  -> show the playlist and its tracks in chat
+  -> each track matches itself on YouTube when it plays, scored so the
+     official recording wins (src/lib/match.js)
+```
+
+**YouTube** — already playable, so nothing is searched or matched.
+
+```
+/play <youtube playlist or mix>
+  -> Lavalink loads the playlist directly
+  -> show the playlist and its tracks in chat
+  -> play them in order, untouched
+```
+
+`list=RD…` urls are YouTube's auto-generated radio stations. They load fine and
+are labelled "YouTube mix" rather than "playlist", since the station is seeded
+from one video rather than curated.
+
+Detection and fetching live in `src/lib/playlist.js`, and both services return
+the same shape, so `/play` does not branch on the service.
+
+### When YouTube refuses to stream
+
+yt-dlp used to be a recovery step: let Lavalink try, re-fetch the video when it
+failed. That is right when failures are occasional and wrong when YouTube is
+refusing the host outright — then *every* track has to fail first, and each
+failure costs an exception, a queue advance by autoSkip, a recovery search and
+a replacement competing for the same slot. A 25-track playlist did that 25
+times, which is what made playback look like it was skipping and spamming.
+
+`src/lib/ytbridge.js` counts the refusals. After two in a row, YouTube tracks
+are fetched with yt-dlp **before** Lavalink is asked to play them — no failure,
+no recovery, no queue churn. The state expires after ten minutes so a temporary
+block does not permanently disable the fast path.
+
 ## Who can control playback
 
 1. Anyone with **Manage Server** always can.
@@ -112,7 +158,7 @@ commands and buttons.
 
 ```bash
 npm run check      # parses every file, validates all 25 command definitions
-npm run simulate   # 98 offline logic tests against a fake player
+npm run simulate   # 105 offline logic tests against a fake player
 ```
 
 The simulation stubs discord.js and lavalink-client, so it runs with no token

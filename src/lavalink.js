@@ -5,6 +5,7 @@ const { controlRows, disabledRows } = require('./lib/controls');
 const { findNextTrack } = require('./lib/autoplay');
 const { findAlternative, familyOf, MAX_ATTEMPTS } = require('./lib/fallback');
 const { YoutubeAudioCache } = require('./lib/ytdlp');
+const ytbridge = require('./lib/ytbridge');
 
 /**
  * Creates the Lavalink manager and wires every player event.
@@ -190,6 +191,8 @@ function setupLavalink(client, { config, store, ytCache = null, ytServer = null 
       player.set('fallbackFailures', null);
       player.set('fallbackOrigin', null);
       player.set('ytdlpTried', null);
+      // Playback worked, so the direct YouTube path is healthy again.
+      if (String(track?.info?.sourceName || '').includes('youtube')) ytbridge.recordSuccess();
       await clearLastNowPlaying(player);
 
       // Keep the in-flight send so trackError can wait for it before deleting.
@@ -212,6 +215,10 @@ function setupLavalink(client, { config, store, ytCache = null, ytServer = null 
       // Record the retry state BEFORE any await. queueEnd fires as soon as the
       // failed track leaves the queue, and if it wins the race it sees no
       // recovery in progress and announces "queue finished" mid-retry.
+      // Count YouTube refusals so the next tracks skip the failing path
+      // entirely instead of each having to fail first.
+      if (familyOf(track) === 'youtube') ytbridge.recordFailure();
+
       const failures = player.get('fallbackFailures') || [];
       const nextFailures = [...failures, { uri: track?.info?.uri, family: familyOf(track) }];
       player.set('fallbackFailures', nextFailures);
