@@ -64,6 +64,39 @@ subcommands and groups both count against it. There are exactly 25 today, so a
 26th command means folding related ones into a group first. `npm run deploy`
 fails with that message rather than letting the API reject it opaquely.
 
+## Playing in more than one channel at once
+
+**Discord allows a bot exactly one voice connection per server.** Homer cannot
+be in two voice channels of the same server at the same time, and no setting
+changes that — it is how Discord works, and it is why the big music bots ship
+as "Name (1)", "Name (2)" and so on.
+
+If someone asks for music while a session is running elsewhere, Homer says which
+channel is busy and how many people are listening, rather than silently queueing
+into a channel they are not in. If that channel has emptied out, it moves to
+them instead.
+
+To genuinely serve two channels at once, run a second instance:
+
+1. Create a second application in the Discord Developer Portal, get its token,
+   and invite it to the server.
+2. Copy `.env` to `.env.2` and change **at least** these:
+
+   ```ini
+   DISCORD_TOKEN=<the second bot's token>
+   CLIENT_ID=<the second bot's application id>
+   COMMAND_NAMESPACE=homer2      # or both register /homer and collide
+   DATA_FILE=./data/guilds2.json # or they overwrite each other's settings
+   YT_CACHE_PORT=2445            # one loopback port each
+   ```
+
+3. `pm2 start ecosystem.config.js` — `.env.2`, `.env.3` … are picked up
+   automatically as `music-bot-2`, `music-bot-3`. Then run
+   `ENV_FILE=$PWD/.env.2 npm run deploy` to register its commands.
+
+One Lavalink serves them all; only the Discord gateway connection has to be
+separate. Each instance costs about 100 MB of RAM.
+
 ## Who can control playback
 
 1. Anyone with **Manage Server** always can.
@@ -79,7 +112,7 @@ commands and buttons.
 
 ```bash
 npm run check      # parses every file, validates all 25 command definitions
-npm run simulate   # 95 offline logic tests against a fake player
+npm run simulate   # 98 offline logic tests against a fake player
 ```
 
 The simulation stubs discord.js and lavalink-client, so it runs with no token

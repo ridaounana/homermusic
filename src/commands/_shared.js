@@ -29,12 +29,48 @@ async function requirePlayer(interaction, { client, config, store }, options = {
   return { player, settings };
 }
 
-/** Creates and connects a player, or returns the existing one. */
+/**
+ * Creates and connects a player, or returns the existing one.
+ *
+ * Discord allows a bot exactly one voice connection per server, so a session
+ * already running in another channel cannot simply be joined. Returning it
+ * regardless - which is what this used to do - queued the caller's song into a
+ * channel they were not in, so they never heard it and were told nothing.
+ *
+ * If everyone has left the channel the bot is sitting in, it follows the caller
+ * instead: nobody is listening there, so there is nothing to interrupt.
+ */
 async function getOrCreatePlayer(interaction, { client, config, store }) {
-  const existing = client.lavalink.getPlayer(interaction.guildId);
-  if (existing) return existing;
-
   const voice = interaction.member?.voice?.channel;
+  const existing = client.lavalink.getPlayer(interaction.guildId);
+
+  if (existing) {
+    const sameChannel = !existing.voiceChannelId || existing.voiceChannelId === voice?.id;
+    if (sameChannel) return existing;
+
+    const busy = interaction.guild?.channels?.cache?.get(existing.voiceChannelId);
+    const listeners = busy?.members?.filter?.((m) => !m.user.bot)?.size ?? 0;
+
+    if (listeners > 0) {
+      throw new Error(
+        `I'm already playing in **${busy?.name || 'another channel'}** for `
+        + `${listeners} ${listeners === 1 ? 'person' : 'people'}. Discord only lets me be in one `
+        + 'voice channel per server at a time — join them, or wait until they finish.',
+      );
+    }
+
+    // Abandoned session: move rather than refuse.
+    if (voice) {
+      const problem = botCanJoin(voice, interaction.guild.members.me);
+      if (problem) throw new Error(problem);
+      existing.voiceChannelId = voice.id;
+      existing.textChannelId = interaction.channelId;
+      await existing.connect();
+      return existing;
+    }
+    return existing;
+  }
+
   if (!voice) return null;
 
   const problem = botCanJoin(voice, interaction.guild.members.me);

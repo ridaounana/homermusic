@@ -16,7 +16,12 @@ function loadEnvFile(file) {
     if (!(key in process.env)) process.env[key] = value;
   }
 }
-loadEnvFile(path.resolve(process.cwd(), '.env'));
+// ENV_FILE lets a second bot instance run the same code with its own token and
+// command namespace - the only way to serve two voice channels in one server,
+// since Discord allows a bot just one voice connection per server.
+loadEnvFile(process.env.ENV_FILE
+  ? path.resolve(process.env.ENV_FILE)
+  : path.resolve(process.cwd(), '.env'));
 
 const num = (v, d) => (Number.isFinite(Number(v)) ? Number(v) : d);
 const bool = (v, d) => (v === undefined ? d : /^(1|true|yes|on)$/i.test(String(v)));

@@ -202,6 +202,78 @@ const cmd = (name) => require(`../src/commands/${name}`);
   });
 
   console.log(lines.splice(0).join('\n'));
+  console.log('\nONE VOICE CHANNEL PER SERVER');
+
+  const shared = require('../src/commands/_shared');
+
+  // Discord allows a bot one voice connection per server, so a session already
+  // running elsewhere cannot be joined. Returning it anyway queued the caller's
+  // song into a channel they were not in, and told them nothing.
+  const voiceChannel = (id, name, humans) => ({
+    id,
+    name,
+    members: { filter: () => ({ size: humans }), size: humans },
+    // botCanJoin checks Connect/Speak before moving into a channel.
+    permissionsFor: () => ({ has: () => true }),
+    userLimit: 0,
+    full: false,
+  });
+  const guildWith = (channels) => ({
+    channels: { cache: { get: (id) => channels[id] || null } },
+    members: { me: {} },
+  });
+  const ctxFor = (existingPlayer) => ({
+    client: { lavalink: { getPlayer: () => existingPlayer, createPlayer: () => makePlayer([]) } },
+    config,
+    store: { guild: () => ({ defaultVolume: 80 }) },
+  });
+
+  await test('a second channel is refused, with the reason', async () => {
+    const existing = makePlayer([]);
+    existing.voiceChannelId = 'vcA';
+    const interaction = {
+      guildId: 'g1',
+      channelId: 'tc1',
+      member: { voice: { channel: voiceChannel('vcB', 'Gaming', 1) } },
+      guild: guildWith({ vcA: voiceChannel('vcA', 'General', 3) }),
+    };
+    await assert.rejects(
+      () => shared.getOrCreatePlayer(interaction, ctxFor(existing)),
+      (err) => /General/.test(err.message) && /3 people/.test(err.message),
+      'should name the busy channel and how many are listening',
+    );
+  });
+
+  await test('the same channel keeps working for everyone in it', async () => {
+    const existing = makePlayer([]);
+    existing.voiceChannelId = 'vcA';
+    const interaction = {
+      guildId: 'g1',
+      channelId: 'tc1',
+      member: { voice: { channel: voiceChannel('vcA', 'General', 4) } },
+      guild: guildWith({ vcA: voiceChannel('vcA', 'General', 4) }),
+    };
+    const got = await shared.getOrCreatePlayer(interaction, ctxFor(existing));
+    assert.strictEqual(got, existing, 'anyone already in the channel shares the session');
+  });
+
+  await test('an abandoned session follows the next person', async () => {
+    // Nobody is listening in the old channel, so there is nothing to interrupt.
+    const existing = makePlayer([]);
+    existing.voiceChannelId = 'vcA';
+    existing.connect = async () => { existing.connected = true; };
+    const interaction = {
+      guildId: 'g1',
+      channelId: 'tc9',
+      member: { voice: { channel: voiceChannel('vcB', 'Gaming', 1) } },
+      guild: guildWith({ vcA: voiceChannel('vcA', 'General', 0) }),
+    };
+    const got = await shared.getOrCreatePlayer(interaction, ctxFor(existing));
+    assert.strictEqual(got.voiceChannelId, 'vcB', 'should move to the new channel');
+    assert.strictEqual(got.textChannelId, 'tc9', 'and follow the conversation');
+  });
+
+  console.log(lines.splice(0).join('\n'));
   console.log('\nTRACK MATCHING');
 
   const match = require('../src/lib/match');
