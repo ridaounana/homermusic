@@ -1448,6 +1448,30 @@ const cmd = (name) => require(`../src/commands/${name}`);
     assert.match(denied, /Only <@&dj1>/);
   });
 
+  await test('requesterOnlyControls lets you control the track you queued', () => {
+    // The useful middle ground: a DJ role stops others touching your music,
+    // but you are not locked out of your own. Two humans in the channel, so
+    // the "alone with the bot" rule cannot be what is passing.
+    const settings = { djRoleId: 'dj1', requesterOnlyControls: true };
+
+    const mine = makePlayer([makeTrack('A')]);
+    mine.queue.current.requester = { id: 'u1' };
+    assert.strictEqual(checkControl(makeInteraction({ userId: 'u1' }), mine, settings), null,
+      'the requester should get through');
+
+    const theirs = makePlayer([makeTrack('A')]);
+    theirs.queue.current.requester = { id: 'someone-else' };
+    assert.match(checkControl(makeInteraction({ userId: 'u1' }), theirs, settings), /Only <@&dj1>/,
+      'but not someone else’s track');
+
+    // Off, the requester has no special standing.
+    assert.match(
+      checkControl(makeInteraction({ userId: 'u1' }), mine, { djRoleId: 'dj1' }),
+      /Only <@&dj1>/,
+      'the setting has to actually be on',
+    );
+  });
+
   await test('a DJ passes the same check', () => {
     const i = makeInteraction({ roles: ['dj1'] });
     assert.strictEqual(checkControl(i, makePlayer([makeTrack('A')]), { djRoleId: 'dj1' }), null);

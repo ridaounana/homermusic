@@ -47,6 +47,15 @@ module.exports = {
         { name: '24/7 mode', value: settings.twentyFourSeven ? 'On' : 'Off', inline: true },
         { name: 'Announcements', value: settings.announceTracks ? 'On' : 'Off', inline: true },
         { name: 'Default volume', value: `${settings.defaultVolume ?? config.player.defaultVolume}%`, inline: true },
+        // Was settable only by editing the data file, so it never showed up
+        // here and nobody could tell whether it was on.
+        {
+          name: 'Control your own tracks',
+          value: settings.requesterOnlyControls
+            ? 'On — you can always skip a track you queued'
+            : 'Off',
+          inline: true,
+        },
       )],
     });
   },
