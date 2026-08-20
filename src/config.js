@@ -70,6 +70,9 @@ const config = {
     idleTimeoutMs: num(process.env.IDLE_TIMEOUT_MS, 300000),
     maxQueueSize: num(process.env.MAX_QUEUE_SIZE, 1000),
     maxPreviousTracks: num(process.env.MAX_PREVIOUS_TRACKS, 25),
+    // Delete the previous now-playing message instead of greying it out, so
+    // a long queue leaves one live embed rather than one per track.
+    cleanNowPlaying: bool(process.env.CLEAN_NOW_PLAYING, true),
   },
 
   // Read album metadata straight from Spotify. LavaSrc cannot: it follows up

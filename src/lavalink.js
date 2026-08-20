@@ -63,40 +63,42 @@ function setupLavalink(client, { config, store, ytCache = null, ytServer = null 
     }
   }
 
-  /** Replace the previous now-playing message so channels don't fill with them. */
-  async function clearLastNowPlaying(player) {
-    const previous = player.get('npMessage');
-    if (!previous) return;
-    try {
-      await previous.edit({ components: disabledRows(player) });
-    } catch { /* message deleted or too old */ }
-    player.set('npMessage', null);
-  }
-
   /**
-   * Remove a now-playing message for a track that never actually played.
+   * Retires the previous now-playing message.
    *
-   * Lavalink emits trackStart before the stream is fetched, so a track that
-   * fails still announces itself first. Leaving those behind is what turns one
-   * `/play` into a wall of embeds while the source retry works through
-   * candidates - the message describes something nobody ever heard.
+   * Deleting rather than greying out matters on a long queue: a 50-track
+   * playlist otherwise leaves 50 dead embeds behind it, and the one that is
+   * actually playing scrolls away. Set CLEAN_NOW_PLAYING=false to keep the old
+   * behaviour of leaving them in place with their buttons disabled.
+   *
+   * `force` deletes regardless of that setting, for a track that announced
+   * itself and then failed to produce any audio.
    */
-  async function dropLastNowPlaying(player) {
-    // The send may still be in flight - trackError can arrive before Discord
-    // has answered trackStart. Without waiting for it, npMessage is still null
-    // here and the embed survives, which is what left duplicates behind.
+  async function clearLastNowPlaying(player, { force = false } = {}) {
+    // The send may still be in flight - a track can fail before Discord has
+    // answered trackStart. Without waiting, npMessage is still null here and
+    // the embed survives.
     const pending = player.get('npPending');
-    if (pending) { try { await pending; } catch { /* send failed, nothing to drop */ } }
+    if (pending) { try { await pending; } catch { /* send failed, nothing to clear */ } }
 
     const previous = player.get('npMessage');
     if (!previous) return;
-    try {
-      await previous.delete();
-    } catch {
-      try { await previous.edit({ components: disabledRows(player) }); } catch { /* gone */ }
-    }
     player.set('npMessage', null);
+
+    const remove = force || config.player.cleanNowPlaying;
+    try {
+      if (remove) await previous.delete();
+      else await previous.edit({ components: disabledRows(player) });
+    } catch {
+      // Already gone, or deleting was refused - fall back to disabling it so a
+      // stale message never keeps working buttons.
+      if (remove) {
+        try { await previous.edit({ components: disabledRows(player) }); } catch { /* gone */ }
+      }
+    }
   }
+
+  const dropLastNowPlaying = (player) => clearLastNowPlaying(player, { force: true });
 
   /**
    * Re-fetches a failed YouTube track with yt-dlp and plays the cached file.
@@ -135,13 +137,49 @@ function setupLavalink(client, { config, store, ytCache = null, ytServer = null 
     local.requester = origin?.requester ?? failed?.requester;
 
     try {
-      await player.play({ clientTrack: local });
+      // Same autoSkip hazard as any other replacement - go through the guard.
+      await playReplacement(player, origin, local);
       console.log(`[ytdlp] playing "${from.title || videoId}" from cache`);
       return true;
     } catch (e) {
       console.error('[ytdlp] local playback failed:', e?.message || e);
       return false;
     }
+  }
+
+  /**
+   * Plays a replacement for a track that failed, without fighting autoSkip.
+   *
+   * Lavalink follows a track exception with a trackEnd carrying
+   * reason "loadFailed". lavalink-client handles that by advancing the queue -
+   * the next song becomes current - and starting it. Our recovery search takes
+   * long enough that this has usually already happened by the time an
+   * alternative is found.
+   *
+   * Calling play() at that point overwrites the song autoSkip just started, so
+   * it is consumed without ever being heard and two now-playing messages appear
+   * for one slot. That is the "it skips songs and posts three times" behaviour.
+   *
+   * So: if the player has already moved on, queue the replacement at the front
+   * instead. Nothing is lost - it plays right after the song already running -
+   * and only one now-playing message exists at a time.
+   */
+  async function playReplacement(player, origin, replacement) {
+    const current = player.queue.current;
+    const failedUri = origin?.info?.uri;
+    const movedOn = Boolean(
+      current
+      && player.playing
+      && current.info?.uri
+      && current.info.uri !== failedUri,
+    );
+
+    if (movedOn) {
+      await player.queue.add(replacement, 0);
+      console.log('[player] queued the replacement next; autoSkip had already moved on');
+      return;
+    }
+    await player.play({ clientTrack: replacement });
   }
 
   // ----------------------------------------------------------- player events
@@ -202,7 +240,7 @@ function setupLavalink(client, { config, store, ytCache = null, ytServer = null 
         if (alt) {
           console.log(`[player] retrying "${title}" on ${alt.source}`);
           try {
-            await player.play({ clientTrack: alt.track });
+            await playReplacement(player, origin, alt.track);
             return;
           } catch (e) {
             console.error('[player] fallback play failed:', e?.message || e);

@@ -359,6 +359,153 @@ const cmd = (name) => require(`../src/commands/${name}`);
   });
 
   console.log(lines.splice(0).join('\n'));
+  console.log('\nNOW PLAYING LIFECYCLE');
+
+  // Drives the real trackStart/trackEnd handlers in src/lavalink.js against a
+  // fake Discord channel, so the announce lifecycle is covered rather than
+  // assumed. Constructing the manager does not open a connection.
+  function announceHarness({ cleanNowPlaying = true } = {}) {
+    const { setupLavalink } = require('../src/lavalink');
+    const sent = [];
+    const channel = {
+      isTextBased: () => true,
+      async send(payload) {
+        const msg = {
+          payload, deleted: false, edited: false,
+          async delete() { this.deleted = true; },
+          async edit() { this.edited = true; },
+        };
+        sent.push(msg);
+        return msg;
+      },
+    };
+    const fakeClient = {
+      on() {}, once() {},
+      guilds: { cache: { get: () => null } },
+      channels: { fetch: async () => channel },
+    };
+    const cfg = {
+      ...config,
+      clientId: '1',
+      lavalink: { id: 'main', host: '127.0.0.1', port: 2333, authorization: 'x', secure: false },
+      player: { ...config.player, cleanNowPlaying, idleTimeoutMs: 0, maxPreviousTracks: 5 },
+      ytdlp: { enabled: false, bin: '' },
+    };
+    const manager = setupLavalink(fakeClient, {
+      config: cfg,
+      store: { guild: () => ({ announceTracks: true, twentyFourSeven: true, djRoleId: null }) },
+    });
+    return { manager, sent };
+  }
+
+  const npPlayer = () => {
+    const p = makePlayer([makeTrack('A'), makeTrack('B')]);
+    p.guildId = 'g1';
+    return p;
+  };
+  const settle = () => new Promise((r) => setTimeout(r, 30));
+
+  await test('each new track replaces the last now-playing message', async () => {
+    const { manager, sent } = announceHarness();
+    const p = npPlayer();
+
+    manager.emit('trackStart', p, makeTrack('Track one'));
+    await settle();
+    assert.strictEqual(sent.length, 1, 'first track announces');
+
+    // trackEnd then trackStart is the real sequence between queue items.
+    manager.emit('trackEnd', p);
+    await settle();
+    manager.emit('trackStart', p, makeTrack('Track two'));
+    await settle();
+
+    assert.strictEqual(sent.length, 2, 'second track announces');
+    assert.strictEqual(sent[0].deleted, true, 'the first embed must be removed');
+    assert.strictEqual(sent[1].deleted, false, 'the playing one stays');
+  });
+
+  await test('a 10-track run leaves exactly one embed behind', async () => {
+    const { manager, sent } = announceHarness();
+    const p = npPlayer();
+    for (let i = 0; i < 10; i++) {
+      manager.emit('trackStart', p, makeTrack(`T${i}`));
+      await settle();
+      manager.emit('trackEnd', p);
+      await settle();
+    }
+    manager.emit('trackStart', p, makeTrack('current'));
+    await settle();
+
+    const alive = sent.filter((m) => !m.deleted);
+    assert.strictEqual(sent.length, 11, 'one announce per track');
+    assert.strictEqual(alive.length, 1, `expected 1 live embed, found ${alive.length}`);
+  });
+
+  await test('CLEAN_NOW_PLAYING=false keeps them, buttons disabled', async () => {
+    const { manager, sent } = announceHarness({ cleanNowPlaying: false });
+    const p = npPlayer();
+    manager.emit('trackStart', p, makeTrack('one'));
+    await settle();
+    manager.emit('trackEnd', p);
+    await settle();
+    manager.emit('trackStart', p, makeTrack('two'));
+    await settle();
+
+    assert.strictEqual(sent[0].deleted, false, 'must not delete when turned off');
+    assert.strictEqual(sent[0].edited, true, 'should disable the old buttons instead');
+  });
+
+  await test('a track that fails after announcing has its embed removed', async () => {
+    const { manager, sent } = announceHarness({ cleanNowPlaying: false });
+    const p = npPlayer();
+    manager.emit('trackStart', p, makeTrack('doomed'));
+    await settle();
+    // Lavalink emits trackStart before fetching the stream, so a failure comes
+    // after the embed is already posted. It describes audio nobody heard.
+    manager.emit('trackError', p, makeTrack('doomed'), { exception: { message: 'boom' } });
+    await settle();
+    assert.strictEqual(sent[0].deleted, true, 'a failed track is deleted even when cleaning is off');
+  });
+
+  await test('a replacement never overwrites the song autoSkip already started', async () => {
+    // Lavalink follows an exception with trackEnd(loadFailed); lavalink-client
+    // advances the queue and starts the next song. Playing the replacement on
+    // top of that consumed a queued song without anyone hearing it, and posted
+    // a second now-playing for the same slot.
+    const { manager } = announceHarness();
+    const p = npPlayer();
+    const failed = makeTrack('broken', { uri: 'https://x/broken' });
+
+    const promoted = makeTrack('already playing', { uri: 'https://x/next' });
+    p.queue.current = promoted;
+    p.playing = true;
+    const before = p.queue.tracks.length;
+    let played = null;
+    p.play = async (opts) => { played = opts?.clientTrack || null; };
+
+    manager.emit('trackError', p, failed, { exception: { message: 'boom' } });
+    await new Promise((r) => setTimeout(r, 150));
+
+    assert.strictEqual(played, null, 'must not replace the song that is already playing');
+    assert.strictEqual(p.queue.current, promoted, 'the promoted song keeps playing');
+    assert.strictEqual(p.queue.tracks.length, before + 1, 'the replacement is queued next, not dropped');
+  });
+
+  await test('a replacement plays immediately when nothing moved on', async () => {
+    const { manager } = announceHarness();
+    const p = npPlayer();
+    const failed = makeTrack('broken', { uri: 'https://x/broken' });
+    p.queue.current = failed;
+    p.playing = false;
+    let played = null;
+    p.play = async (opts) => { played = opts?.clientTrack || null; };
+
+    manager.emit('trackError', p, failed, { exception: { message: 'boom' } });
+    await new Promise((r) => setTimeout(r, 150));
+    assert.ok(played, 'should take over directly');
+  });
+
+  console.log(lines.splice(0).join('\n'));
   console.log('\nSPOTIFY ALBUMS');
 
   const { SpotifyClient, parseLink } = require('../src/lib/spotify');
