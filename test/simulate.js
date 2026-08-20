@@ -359,6 +359,49 @@ const cmd = (name) => require(`../src/commands/${name}`);
   });
 
   console.log(lines.splice(0).join('\n'));
+  console.log('\nSPOTIFY LINK DIAGNOSTICS');
+
+  const linkhelp = require('../src/lib/linkhelp');
+
+  await test('a generated playlist is named as the reason, not "no results"', () => {
+    // The 37i9dQ prefix is Spotify's own generated/editorial playlists, which
+    // 404 for third-party apps no matter how the app is configured.
+    const why = linkhelp.describeFailure(
+      'https://open.spotify.com/playlist/37i9dQZF1E37SJ9QrLTfR0?si=62da35f32cfa43be');
+    assert.ok(why, 'should explain the failure');
+    assert.match(why, /generated/i);
+    assert.ok(!/no results/i.test(why), 'must not claim there were no results');
+  });
+
+  await test('an ordinary playlist gets a different explanation', () => {
+    const why = linkhelp.describeFailure('https://open.spotify.com/playlist/0vvXsWCC9xrXsKd4FyS8kM');
+    assert.ok(why);
+    assert.match(why, /signing in|Spotify user/i);
+    assert.ok(!/generated/i.test(why), 'a user playlist is not a generated one');
+  });
+
+  await test('the country-prefixed link format is recognised', () => {
+    // Spotify hands out /intl-fr/ links from the app; missing that prefix would
+    // silently fall back to the wrong message.
+    const why = linkhelp.describeFailure('https://open.spotify.com/intl-fr/playlist/37i9dQZF1E37SJ9QrLTfR0');
+    assert.ok(why);
+    assert.match(why, /generated/i);
+    assert.ok(linkhelp.describeFailure('spotify:album:4m2880jivSbbyEGAKfITCa'), 'uri form too');
+  });
+
+  await test('albums and artists each get their own message', () => {
+    assert.match(linkhelp.describeFailure('https://open.spotify.com/album/4m2880jivSbbyEGAKfITCa'), /bulk track lookup/i);
+    assert.match(linkhelp.describeFailure('https://open.spotify.com/artist/4tZwfgrHOc3mvqYlEYSvVi'), /Artist links/i);
+  });
+
+  await test('anything else falls through to the normal message', () => {
+    for (const q of ['never gonna give you up', 'https://youtube.com/watch?v=x',
+      'https://open.spotify.com/track/0DiWol3AO6WpXZgp0goxAV', '', null]) {
+      assert.strictEqual(linkhelp.describeFailure(q), null, `should not explain: ${q}`);
+    }
+  });
+
+  console.log(lines.splice(0).join('\n'));
   console.log('\nPRESENCE');
 
   const presence = require('../src/lib/presence');

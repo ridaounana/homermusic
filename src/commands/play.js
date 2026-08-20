@@ -1,6 +1,7 @@
 'use strict';
 const { SlashCommandBuilder } = require('discord.js');
 const embeds = require('../lib/embeds');
+const { describeFailure } = require('../lib/linkhelp');
 const { fail, getOrCreatePlayer } = require('./_shared');
 
 const SOURCES = [
@@ -54,7 +55,8 @@ module.exports = {
     }
 
     if (!result || !result.tracks?.length || result.loadType === 'error') {
-      return fail(interaction, config, `No results for **${query}**.`);
+      const why = describeFailure(query);
+      return fail(interaction, config, why || `No results for **${query}**.`);
     }
 
     const room = config.player.maxQueueSize - player.queue.tracks.length;

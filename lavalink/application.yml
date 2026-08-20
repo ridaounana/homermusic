@@ -78,6 +78,12 @@ plugins:
       countryCode: "FR"
       playlistLoadLimit: 6   # x100 tracks
       albumLoadLimit: 6
+      # Spotify locked several Web API endpoints for apps created after
+      # 2024-11-27. With app credentials a playlist's tracks cannot be read
+      # at all, and the batch /tracks?ids= lookup that albums need is 403.
+      # Neither setting of this flag changes that - measured, not assumed.
+      # Track links work. See the Spotify note in README.md.
+      preferPartnerApi: false
     applemusic:
       countryCode: "FR"
       mediaAPIToken: ""      # optional; without it Apple links use a fallback

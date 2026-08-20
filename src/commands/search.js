@@ -1,6 +1,7 @@
 'use strict';
 const { SlashCommandBuilder, ComponentType } = require('discord.js');
 const embeds = require('../lib/embeds');
+const { describeFailure } = require('../lib/linkhelp');
 const { searchRows } = require('../lib/controls');
 const { duration, trackLink } = require('../lib/format');
 const { fail, getOrCreatePlayer, EPHEMERAL } = require('./_shared');
@@ -39,7 +40,10 @@ module.exports = {
 
     const result = await player.search({ query, source }, interaction.user).catch(() => null);
     const tracks = (result?.tracks || []).slice(0, 5);
-    if (!tracks.length) return fail(interaction, config, `No results for **${query}**.`);
+    if (!tracks.length) {
+      const why = describeFailure(query);
+      return fail(interaction, config, why || `No results for **${query}**.`);
+    }
 
     const list = tracks.map((t, i) =>
       `\`${i + 1}.\` ${trackLink(t)} — \`${duration(t.info?.duration, t.info?.isStream)}\``).join('\n');
