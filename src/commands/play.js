@@ -3,7 +3,7 @@ const { SlashCommandBuilder } = require('discord.js');
 const embeds = require('../lib/embeds');
 const { describeFailure } = require('../lib/linkhelp');
 const { fail, getOrCreatePlayer } = require('./_shared');
-const { parseLink } = require('../lib/spotify');
+const { parseLink, readEmbed } = require('../lib/spotify');
 
 const SOURCES = [
   { name: 'YouTube Music', value: 'ytmsearch' },
@@ -15,30 +15,47 @@ const SOURCES = [
 ];
 
 /**
- * Resolves a Spotify album into queueable tracks.
+ * Resolves a Spotify album or playlist into queueable tracks.
  *
- * The tracks are built unresolved: each carries its title and artist and is
- * looked up on the normal search source at the moment it plays. Searching all
- * of them up front would mean one request per track before the first note.
+ * Albums go through the Web API first: it gives ISRCs and exact durations.
+ * Playlists cannot be read that way at all, and albums fall over on a batch
+ * endpoint Spotify forbids, so both fall back to the public embed widget -
+ * which is what actually makes playlist links work.
  *
- * Returns { tracks } on success, { reason } when the link is a Spotify link we
- * cannot handle, or null when it is not a Spotify link at all.
+ * Tracks are built unresolved: each carries its title and artist and is looked
+ * up on the normal search source the moment it plays, so a 100-track playlist
+ * costs one request rather than a hundred searches up front.
+ *
+ * Returns { name, artist, tracks, truncated } on success, { reason } when a
+ * Spotify link cannot be read, or null when it is not a Spotify link.
  */
-async function loadSpotifyAlbum(client, config, query, requester) {
+async function loadSpotifyCollection(client, query, requester) {
   const link = parseLink(query);
-  if (!link || link.kind !== 'album') return null;
-  if (!client.spotify?.enabled()) return null;
+  if (!link || (link.kind !== 'album' && link.kind !== 'playlist')) return null;
 
-  let album;
-  try {
-    album = await client.spotify.album(link.id);
-  } catch (err) {
-    console.error('[play] spotify album lookup failed:', err?.message || err);
-    return { reason: `Could not read that album from Spotify (${err?.status || 'error'}).` };
+  let data = null;
+
+  if (link.kind === 'album' && client.spotify?.enabled()) {
+    try {
+      data = await client.spotify.album(link.id);
+    } catch (err) {
+      console.warn('[play] spotify album api failed, trying embed:', err?.message || err);
+    }
   }
-  if (!album?.tracks?.length) return { reason: 'That Spotify album came back empty.' };
 
-  const tracks = album.tracks.map((t) => client.lavalink.utils.buildUnresolvedTrack({
+  if (!data) {
+    data = await readEmbed(link.kind, link.id);
+  }
+
+  if (!data?.tracks?.length) {
+    return {
+      reason: link.kind === 'playlist'
+        ? 'Could not read that Spotify playlist. Private playlists are not visible to bots.'
+        : 'Could not read that Spotify album.',
+    };
+  }
+
+  const tracks = data.tracks.map((t) => client.lavalink.utils.buildUnresolvedTrack({
     title: t.title,
     author: t.author,
     duration: t.duration,
@@ -48,7 +65,7 @@ async function loadSpotifyAlbum(client, config, query, requester) {
     sourceName: 'spotify',
   }, requester));
 
-  return { name: album.name, artist: album.artist, tracks };
+  return { name: data.name, artist: data.artist, truncated: data.truncated, tracks };
 }
 
 module.exports = {
@@ -93,23 +110,28 @@ module.exports = {
     }
 
     if (!result || !result.tracks?.length || result.loadType === 'error') {
-      // A Spotify album fails inside LavaSrc on a batch endpoint Spotify now
-      // forbids, even though the album itself reads fine. Do it ourselves.
-      const album = await loadSpotifyAlbum(client, config, query, interaction.user);
-      if (album?.tracks?.length) {
+      // LavaSrc cannot read Spotify albums or playlists any more, so resolve
+      // them here before reporting a failure.
+      const collection = await loadSpotifyCollection(client, query, interaction.user);
+      if (collection?.tracks?.length) {
         const room = config.player.maxQueueSize - player.queue.tracks.length;
         if (room <= 0) return fail(interaction, config, `Queue is full (${config.player.maxQueueSize} tracks).`);
-        const queued = album.tracks.slice(0, room);
+        const queued = collection.tracks.slice(0, room);
         await player.queue.add(queued, playNext ? 0 : undefined);
+        const label = collection.artist
+          ? `${collection.name} — ${collection.artist}`
+          : collection.name;
         await interaction.editReply({
-          embeds: [embeds.addedPlaylist(config, `${album.name} — ${album.artist}`, queued)],
+          embeds: [embeds.addedPlaylist(config, label, queued, {
+            note: collection.truncated ? 'Spotify only exposes the first 100 tracks' : null,
+          })],
         });
         if (!player.playing && !player.paused) await player.play();
         player.textChannelId = interaction.channelId;
         return undefined;
       }
 
-      const why = album?.reason || describeFailure(query);
+      const why = collection?.reason || describeFailure(query);
       return fail(interaction, config, why || `No results for **${query}**.`);
     }
 

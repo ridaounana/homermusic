@@ -79,7 +79,7 @@ commands and buttons.
 
 ```bash
 npm run check      # parses every file, validates all 25 command definitions
-npm run simulate   # 79 offline logic tests against a fake player
+npm run simulate   # 81 offline logic tests against a fake player
 ```
 
 The simulation stubs discord.js and lavalink-client, so it runs with no token
@@ -100,25 +100,38 @@ version", that's why.
 
 ### What Spotify links actually work
 
-Spotify locked several Web API endpoints for applications created after
-**2024-11-27**. Measured against the live node with valid app credentials:
+All of them: track, album and playlist. Getting there needs two different
+routes, because Spotify locked several Web API endpoints for applications
+created after **2024-11-27**.
 
-| Link | Works | Why |
-|---|---|---|
-| Track | yes | |
-| Album | yes, **via the bot** | LavaSrc loads the album then calls the batch `/tracks?ids=` endpoint, which is now `403`. `src/lib/spotify.js` reads the album directly and skips that call. |
-| Playlist | **no** | `/playlists/{id}/items` is `401 Valid user authentication required`, and the playlist object comes back with its track list stripped. There is nothing to read without a user login. |
-| Generated playlist (`37i9dQ…`) | **no** | Discover Weekly, Daily Mix, Radio and the editorial charts `404` for third-party apps entirely. |
+| Link | How it is read |
+|---|---|
+| Track | LavaSrc, unchanged |
+| Album | `albums/{id}` read directly by the bot. LavaSrc loads the album then calls the batch `/tracks?ids=` endpoint purely for artwork, and that endpoint is now `403` — which failed the whole album. |
+| Playlist | the public **embed widget**, `open.spotify.com/embed/playlist/{id}` |
 
-`preferPartnerApi` was tested both ways and changed none of this.
+The Web API genuinely cannot serve playlist contents to an app: `/items` answers
+`401 Valid user authentication required` and the playlist object arrives with
+its track list stripped. But `open.spotify.com/embed/...` is the widget Spotify
+serves to anonymous browsers, and it ships the whole track list as JSON inside
+the page — no credentials, no login, the same data the web player shows anyone.
+That is what makes playlist links work, generated ones (`37i9dQ…`, Discover
+Weekly, Daily Mix, Radio) included.
 
-Album tracks are queued *unresolved*: each carries its title and artist and is
-looked up on the normal search source the moment it plays, so a 30-track album
-does not fire 30 searches before the first note.
+Two things to know about it:
 
-Set `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` in `.env` (the same app as
-`lavalink/application.yml`) to enable album support. Without them the bot just
-reports why the link failed.
+- **The embed caps at 100 tracks.** A longer playlist queues the first 100 and
+  the reply says so.
+- **It parses Spotify's own page**, so it is more fragile than an API. Every
+  step is defensive and a miss returns null, falling back to the ordinary
+  "couldn't read that" path rather than throwing.
+
+Album and playlist tracks are queued *unresolved*: each carries its title and
+artist and is looked up on the normal search source the moment it plays, so a
+100-track playlist costs one request rather than a hundred searches up front.
+
+`SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` in `.env` improve album accuracy
+(ISRCs, exact durations, full track lists past 100). Playlists need neither.
 
 **YouTube.** You chose to enable it knowing the position, so briefly for the
 record: playing YouTube audio through a bot breaks YouTube's Terms of Service.

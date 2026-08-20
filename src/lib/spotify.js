@@ -16,9 +16,15 @@
  * was already in the first response. Reading the album ourselves and skipping
  * the batch call makes album links work again.
  *
- * Playlists are genuinely impossible here: the track list is stripped from the
- * playlist object and /items demands a user login, so there is nothing to read.
- * That needs user-level auth, not a different endpoint.
+ * Playlists are unreadable through that API - the track list is stripped from
+ * the playlist object and /items demands a user login - but they are NOT
+ * unreadable. open.spotify.com/embed/... is the public widget Spotify serves to
+ * anonymous browsers, and it ships the track list inside the page as JSON. No
+ * credentials, no login, the same data anyone sees on the web player. That is
+ * the path used for playlists, and as a fallback for albums.
+ *
+ * The embed returns at most 100 tracks. Beyond that Spotify simply does not
+ * include them, so a very long playlist is queued up to that limit.
  */
 
 const TOKEN_URL = 'https://accounts.spotify.com/api/token';
@@ -148,4 +154,72 @@ class SpotifyClient {
   }
 }
 
-module.exports = { SpotifyClient, parseLink, LINK };
+// A browser UA: the embed is a web widget and is served accordingly.
+const EMBED_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 '
+  + '(KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36';
+
+const NEXT_DATA = /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/;
+
+/** Spotify's embed caps the list; asking for more simply returns this many. */
+const EMBED_MAX = 100;
+
+/**
+ * Reads a playlist or album from the public embed widget.
+ *
+ * This parses a JSON blob out of Spotify's own page, so it is inherently more
+ * fragile than an API: a frontend change can move or rename it. Everything is
+ * read defensively and a miss returns null so the caller can fall back rather
+ * than throw.
+ */
+async function readEmbed(kind, id, { timeoutMs = 12000, fetchImpl = fetch } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let html;
+  try {
+    const res = await fetchImpl(
+      `https://open.spotify.com/embed/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`,
+      { headers: { 'User-Agent': EMBED_UA, Accept: 'text/html' }, signal: controller.signal },
+    );
+    if (!res.ok) return null;
+    html = await res.text();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+
+  const match = NEXT_DATA.exec(html || '');
+  if (!match) return null;
+
+  let entity;
+  try {
+    entity = JSON.parse(match[1])?.props?.pageProps?.state?.data?.entity;
+  } catch {
+    return null;
+  }
+  if (!entity) return null;
+
+  const list = Array.isArray(entity.trackList) ? entity.trackList : [];
+  const artwork = entity.coverArt?.sources?.[0]?.url || undefined;
+
+  const tracks = list.map((t) => ({
+    // subtitle is the artist line, already comma-joined for collaborations.
+    title: t?.title,
+    author: t?.subtitle || '',
+    duration: Number(t?.duration) || 0,
+    url: t?.uri ? `https://open.spotify.com/track/${String(t.uri).split(':').pop()}` : undefined,
+    artworkUrl: artwork,
+  })).filter((t) => t.title);
+
+  if (!tracks.length) return null;
+  return {
+    name: entity.name || entity.title || 'Spotify',
+    artist: entity.subtitle || '',
+    artworkUrl: artwork,
+    tracks,
+    // True when the list was clipped, so the caller can say so.
+    truncated: tracks.length >= EMBED_MAX,
+  };
+}
+
+module.exports = { SpotifyClient, parseLink, readEmbed, LINK, EMBED_MAX };

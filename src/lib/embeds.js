@@ -109,14 +109,17 @@ function added(config, track, positionInQueue) {
   return embed;
 }
 
-function addedPlaylist(config, playlistName, tracks) {
-  return base(config)
+function addedPlaylist(config, playlistName, tracks, { note = null, artworkUrl = null } = {}) {
+  const embed = base(config)
     .setAuthor({ name: '＋   A D D E D   T O   Q U E U E' })
     .setDescription(
       `**${truncate(playlistName, 70)}**\n` +
       `-# playlist\n\n` +
-      `\`${tracks.length} tracks\`   \`${duration(totalQueueDuration(tracks))}\``
+      `\`${tracks.length} tracks\`   \`${duration(totalQueueDuration(tracks))}\`` +
+      (note ? `\n-# ${note}` : '')
     );
+  setArtwork(embed, artworkUrl);
+  return embed;
 }
 
 function queuePage(config, player, page, perPage = 10) {

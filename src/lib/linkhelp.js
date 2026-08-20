@@ -27,21 +27,17 @@ function describeFailure(query) {
   const kind = m[1].toLowerCase();
   const id = m[2];
 
+  // Playlists and albums are resolved through the public embed before this is
+  // ever reached, so getting here means the link itself could not be read.
   if (kind === 'playlist') {
-    const generated = /^37i9dQ/i.test(id);
-    return generated
-      ? 'Spotify **generated** playlists (Discover Weekly, Daily Mix, Radio, '
-        + 'the editorial charts) cannot be read through the API at all — Spotify '
-        + 'blocks them for third-party apps.\nPaste a **track** link, or an '
-        + 'ordinary playlist you or someone else made, and I can work with that.'
-      : 'Spotify no longer lets apps read the contents of a playlist without '
-        + 'signing in as a Spotify user, so I cannot see what is in it.\n'
-        + 'Track links work fine, and YouTube or SoundCloud playlists work too.';
+    return 'Could not read that Spotify playlist. If it is **private**, Spotify '
+      + 'does not show it to anyone who is not signed in as you — make it public, '
+      + 'or paste the tracks individually.';
   }
 
   if (kind === 'album') {
-    return 'Spotify is refusing the bulk track lookup this album needs.\n'
-      + 'A single **track** link works, as does searching the album by name.';
+    return 'Could not read that Spotify album. Check the link, or search the '
+      + 'album by name instead.';
   }
 
   if (kind === 'artist') {

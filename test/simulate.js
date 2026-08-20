@@ -481,6 +481,74 @@ const cmd = (name) => require(`../src/commands/${name}`);
     } finally { stub2.restore(); }
   });
 
+  await test('a playlist is read from the public embed widget', async () => {
+    // Spotify's Web API refuses playlist contents outright, but the embed the
+    // web player serves to anonymous browsers carries the whole track list.
+    const { readEmbed } = require('../src/lib/spotify');
+    const page = (entity) => `<html><head></head><body>`
+      + `<script id="__NEXT_DATA__" type="application/json">`
+      + JSON.stringify({ props: { pageProps: { state: { data: { entity } } } } })
+      + `</script></body></html>`;
+
+    const entity = {
+      name: 'ABAT∑RA',
+      coverArt: { sources: [{ url: 'https://i.scdn.co/image/abc' }] },
+      trackList: [
+        { title: 'PILLAVE', subtitle: 'Shaw', duration: 153041, uri: 'spotify:track:6oAXsyL0b1vm5G43jcfNa6' },
+        { title: 'FOTO', subtitle: 'Lvbel C5, ElGrandeToto, AKDO', duration: 130285, uri: 'spotify:track:68MyQ74n2P9F20sF0ojgVC' },
+        { title: '', subtitle: 'nobody', duration: 1000, uri: 'spotify:track:zzz' },
+      ],
+    };
+    const fetchImpl = async () => ({ ok: true, text: async () => page(entity) });
+
+    const res = await readEmbed('playlist', 'abc', { fetchImpl });
+    assert.strictEqual(res.name, 'ABAT∑RA');
+    assert.strictEqual(res.tracks.length, 2, 'a title-less entry is dropped');
+    assert.strictEqual(res.tracks[0].title, 'PILLAVE');
+    assert.strictEqual(res.tracks[0].author, 'Shaw');
+    assert.strictEqual(res.tracks[0].duration, 153041);
+    // The uri must become a real link, not stay a spotify: uri.
+    assert.strictEqual(res.tracks[0].url, 'https://open.spotify.com/track/6oAXsyL0b1vm5G43jcfNa6');
+    assert.strictEqual(res.tracks[1].author, 'Lvbel C5, ElGrandeToto, AKDO');
+    assert.strictEqual(res.artworkUrl, 'https://i.scdn.co/image/abc');
+    assert.strictEqual(res.truncated, false);
+  });
+
+  await test('the 100-track embed cap is reported, not hidden', async () => {
+    const { readEmbed, EMBED_MAX } = require('../src/lib/spotify');
+    const entity = {
+      name: 'Long one',
+      trackList: Array.from({ length: EMBED_MAX }, (_, i) => ({
+        title: `T${i}`, subtitle: 'A', duration: 1000, uri: `spotify:track:x${i}`,
+      })),
+    };
+    const fetchImpl = async () => ({
+      ok: true,
+      text: async () => `<script id="__NEXT_DATA__" type="application/json">`
+        + JSON.stringify({ props: { pageProps: { state: { data: { entity } } } } })
+        + `</script>`,
+    });
+    const res = await readEmbed('playlist', 'abc', { fetchImpl });
+    assert.strictEqual(res.tracks.length, EMBED_MAX);
+    assert.strictEqual(res.truncated, true, 'the caller needs to know the list was clipped');
+  });
+
+  await test('a broken embed returns null so the caller can fall back', async () => {
+    const { readEmbed } = require('../src/lib/spotify');
+    const cases = [
+      ['http error', async () => ({ ok: false, status: 404, text: async () => '' })],
+      ['no __NEXT_DATA__', async () => ({ ok: true, text: async () => '<html>nope</html>' })],
+      ['malformed json', async () => ({ ok: true, text: async () => '<script id="__NEXT_DATA__" type="application/json">{oops</script>' })],
+      ['no entity', async () => ({ ok: true, text: async () => '<script id="__NEXT_DATA__" type="application/json">{"props":{}}</script>' })],
+      ['empty track list', async () => ({ ok: true, text: async () => '<script id="__NEXT_DATA__" type="application/json">'
+        + JSON.stringify({ props: { pageProps: { state: { data: { entity: { name: 'x', trackList: [] } } } } } }) + '</script>' })],
+      ['network throw', async () => { throw new Error('offline'); }],
+    ];
+    for (const [label, fetchImpl] of cases) {
+      assert.strictEqual(await readEmbed('playlist', 'x', { fetchImpl }), null, label);
+    }
+  });
+
   await test('no credentials means the album path stays switched off', () => {
     assert.strictEqual(new SpotifyClient({}).enabled(), false);
     assert.strictEqual(new SpotifyClient({ clientId: 'a' }).enabled(), false);
@@ -492,21 +560,14 @@ const cmd = (name) => require(`../src/commands/${name}`);
 
   const linkhelp = require('../src/lib/linkhelp');
 
-  await test('a generated playlist is named as the reason, not "no results"', () => {
-    // The 37i9dQ prefix is Spotify's own generated/editorial playlists, which
-    // 404 for third-party apps no matter how the app is configured.
+  await test('an unreadable playlist points at the likely cause', () => {
+    // Playlists resolve through the embed now, so reaching this message means
+    // the link itself could not be read - most often a private playlist.
     const why = linkhelp.describeFailure(
       'https://open.spotify.com/playlist/37i9dQZF1E37SJ9QrLTfR0?si=62da35f32cfa43be');
     assert.ok(why, 'should explain the failure');
-    assert.match(why, /generated/i);
+    assert.match(why, /private/i);
     assert.ok(!/no results/i.test(why), 'must not claim there were no results');
-  });
-
-  await test('an ordinary playlist gets a different explanation', () => {
-    const why = linkhelp.describeFailure('https://open.spotify.com/playlist/0vvXsWCC9xrXsKd4FyS8kM');
-    assert.ok(why);
-    assert.match(why, /signing in|Spotify user/i);
-    assert.ok(!/generated/i.test(why), 'a user playlist is not a generated one');
   });
 
   await test('the country-prefixed link format is recognised', () => {
@@ -514,12 +575,12 @@ const cmd = (name) => require(`../src/commands/${name}`);
     // silently fall back to the wrong message.
     const why = linkhelp.describeFailure('https://open.spotify.com/intl-fr/playlist/37i9dQZF1E37SJ9QrLTfR0');
     assert.ok(why);
-    assert.match(why, /generated/i);
+    assert.match(why, /playlist/i);
     assert.ok(linkhelp.describeFailure('spotify:album:4m2880jivSbbyEGAKfITCa'), 'uri form too');
   });
 
   await test('albums and artists each get their own message', () => {
-    assert.match(linkhelp.describeFailure('https://open.spotify.com/album/4m2880jivSbbyEGAKfITCa'), /bulk track lookup/i);
+    assert.match(linkhelp.describeFailure('https://open.spotify.com/album/4m2880jivSbbyEGAKfITCa'), /album/i);
     assert.match(linkhelp.describeFailure('https://open.spotify.com/artist/4tZwfgrHOc3mvqYlEYSvVi'), /Artist links/i);
   });
 
