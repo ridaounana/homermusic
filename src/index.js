@@ -1,7 +1,7 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const { Client, GatewayIntentBits, Collection, Events, ActivityType } = require('discord.js');
+const { Client, GatewayIntentBits, Collection, Events } = require('discord.js');
 
 const { config, validate } = require('./config');
 const { Store } = require('./store');
@@ -9,6 +9,7 @@ const { setupLavalink } = require('./lavalink');
 const { handleInteraction } = require('./interactions');
 const { YoutubeAudioCache } = require('./lib/ytdlp');
 const { createCacheServer } = require('./lib/ytserve');
+const { buildPresence } = require('./lib/presence');
 
 validate();
 
@@ -63,12 +64,39 @@ if (config.ytdlp.enabled && config.ytdlp.bin) {
 
 setupLavalink(client, { config, store, ytCache, ytServer });
 
+// ----------------------------------------------------------------- presence
+// Discord drops the presence whenever a shard reconnects and never restores it,
+// so setting it once at startup leaves the bot blank after the first hiccup.
+// It is re-applied on resume and on a slow timer.
+function applyPresence() {
+  const payload = buildPresence(config);
+  if (!payload || !client.user) return;
+  try {
+    client.user.setPresence(payload);
+  } catch (e) {
+    console.warn('[bot] could not set presence:', e?.message || e);
+  }
+}
+
+let presenceTimer = null;
+
 // ------------------------------------------------------------------- events
 client.once(Events.ClientReady, async (c) => {
   console.log(`[bot] logged in as ${c.user.tag}`);
   await client.lavalink.init({ id: c.user.id, username: c.user.username });
-  c.user.setActivity('/play', { type: ActivityType.Listening });
+
+  applyPresence();
+  if (config.presence.text) {
+    console.log(`[bot] presence: ${config.presence.type} "${config.presence.text}"`);
+    if (config.presence.refreshMs > 0) {
+      presenceTimer = setInterval(applyPresence, config.presence.refreshMs);
+      if (presenceTimer.unref) presenceTimer.unref();
+    }
+  }
 });
+
+client.on(Events.ShardResume, applyPresence);
+client.on(Events.ShardReady, applyPresence);
 
 client.on(Events.InteractionCreate, (interaction) => handleInteraction(client, interaction));
 
@@ -116,6 +144,7 @@ function shutdown(signal) {
   try {
     for (const player of client.lavalink?.players?.values?.() || []) player.destroy().catch(() => {});
   } catch { /* ignore */ }
+  try { if (presenceTimer) clearInterval(presenceTimer); } catch { /* ignore */ }
   try { ytServer?.close?.(); } catch { /* ignore */ }
   client.destroy();
   process.exit(0);

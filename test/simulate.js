@@ -359,6 +359,53 @@ const cmd = (name) => require(`../src/commands/${name}`);
   });
 
   console.log(lines.splice(0).join('\n'));
+  console.log('\nPRESENCE');
+
+  const presence = require('../src/lib/presence');
+  const { ActivityType } = require('discord.js');
+
+  await test('the listening line is built as Discord expects', () => {
+    const p = presence.buildPresence({ presence: { text: 'CHAOS - JEAN', type: 'listening' } });
+    assert.strictEqual(p.activities.length, 1);
+    assert.strictEqual(p.activities[0].name, 'CHAOS - JEAN');
+    assert.strictEqual(p.activities[0].type, ActivityType.Listening);
+    assert.strictEqual(p.status, 'online');
+  });
+
+  await test('a custom status carries its text in state, not name', () => {
+    // Discord ignores `name` for custom activities and renders `state`; putting
+    // the text in `name` shows nothing at all.
+    const p = presence.buildPresence({ presence: { text: 'CHAOS - JEAN', type: 'custom', status: 'dnd' } });
+    assert.strictEqual(p.activities[0].type, ActivityType.Custom);
+    assert.strictEqual(p.activities[0].state, 'CHAOS - JEAN');
+    assert.strictEqual(p.activities[0].name, 'Custom Status');
+    assert.strictEqual(p.status, 'dnd');
+  });
+
+  await test('an unknown activity type falls back instead of breaking login', () => {
+    for (const t of ['nonsense', '', undefined, null, 42]) {
+      assert.strictEqual(
+        presence.buildPresence({ presence: { text: 'x', type: t } }).activities[0].type,
+        ActivityType.Listening, `type ${t}`);
+    }
+    assert.strictEqual(presence.activityType('WATCHING'), ActivityType.Watching);
+    assert.strictEqual(presence.activityType(' Playing '), ActivityType.Playing);
+  });
+
+  await test('blank text leaves the presence alone rather than clearing it', () => {
+    for (const text of ['', '   ', undefined, null]) {
+      assert.strictEqual(presence.buildPresence({ presence: { text } }), null, `text ${text}`);
+    }
+    assert.strictEqual(presence.buildPresence({}), null);
+    assert.strictEqual(presence.buildPresence(undefined), null);
+  });
+
+  await test('an over-long line is trimmed to what Discord accepts', () => {
+    const p = presence.buildPresence({ presence: { text: 'z'.repeat(500) } });
+    assert.strictEqual(p.activities[0].name.length, presence.MAX_NAME);
+  });
+
+  console.log(lines.splice(0).join('\n'));
   console.log('\nCOMMAND NAMESPACE');
 
   const ns = require('../src/lib/namespace');

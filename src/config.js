@@ -37,6 +37,16 @@ const config = {
   commandNamespace: (process.env.COMMAND_NAMESPACE ?? 'homer').trim().toLowerCase(),
   commandNamespaceDescription:
     process.env.COMMAND_NAMESPACE_DESC || 'Music: play, queue, filters, playlists',
+
+  // The "Listening to …" line under the bot's name. Discord clears presence on
+  // a shard reconnect, so index.js re-applies this rather than setting it once.
+  presence: {
+    text: process.env.PRESENCE_TEXT ?? 'CHAOS - JEAN',
+    // listening | playing | watching | competing | custom
+    type: process.env.PRESENCE_TYPE || 'listening',
+    status: process.env.PRESENCE_STATUS || 'online',
+    refreshMs: num(process.env.PRESENCE_REFRESH_MS, 600000),
+  },
   embedColor: parseInt((process.env.EMBED_COLOR || '9B59B6').replace('#', ''), 16),
   // Shown in the footer of the now-playing and queue embeds. Set empty to drop it.
   brandFooter: process.env.BRAND_FOOTER ?? 'built for chaos333 community',
