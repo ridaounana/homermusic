@@ -1,5 +1,5 @@
 'use strict';
-const { MessageFlags } = require('discord.js');
+const { MessageFlags, PermissionFlagsBits } = require('discord.js');
 const embeds = require('../lib/embeds');
 const { checkControl, botCanJoin } = require('../lib/permissions');
 
@@ -11,6 +11,23 @@ function fail(interaction, config, message) {
   return interaction.deferred || interaction.replied
     ? interaction.editReply({ embeds: payload.embeds })
     : interaction.reply(payload);
+}
+
+/**
+ * Blocks a settings command for anyone without Manage Server.
+ *
+ * `setDefaultMemberPermissions` cannot carry this any more. It is a top-level
+ * command property, and every command is now a *subcommand* of one branded
+ * command - Discord has no per-subcommand permission field, so folding them in
+ * silently dropped the gate and left the settings open to everyone. Enforcing
+ * it here does not depend on how the commands happen to be registered.
+ *
+ * Returns true when it has already replied and the caller should stop.
+ */
+async function requireManageGuild(interaction, config) {
+  if (interaction.member?.permissions?.has?.(PermissionFlagsBits.ManageGuild)) return false;
+  await fail(interaction, config, 'You need the **Manage Server** permission to change music settings.');
+  return true;
 }
 
 /**
@@ -163,4 +180,6 @@ async function getOrCreatePlayer(interaction, ctx) {
   return player;
 }
 
-module.exports = { EPHEMERAL, fail, requirePlayer, getOrCreatePlayer, resolvePlayer };
+module.exports = {
+  EPHEMERAL, fail, requirePlayer, getOrCreatePlayer, resolvePlayer, requireManageGuild,
+};

@@ -1,6 +1,7 @@
 'use strict';
 const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
 const embeds = require('../lib/embeds');
+const { requireManageGuild } = require('./_shared');
 
 module.exports = {
   data: new SlashCommandBuilder().setName('247')
@@ -10,6 +11,8 @@ module.exports = {
     .setDMPermission(false),
 
   async execute(interaction, { config, store }) {
+    if (await requireManageGuild(interaction, config)) return undefined;
+
     const enabled = interaction.options.getBoolean('enabled', true);
     store.setGuild(interaction.guildId, { twentyFourSeven: enabled });
     store.flush();

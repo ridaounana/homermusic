@@ -1,6 +1,7 @@
 'use strict';
 const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
 const embeds = require('../lib/embeds');
+const { requireManageGuild } = require('./_shared');
 
 module.exports = {
   data: new SlashCommandBuilder().setName('dj').setDescription('Configure who can control playback')
@@ -13,6 +14,10 @@ module.exports = {
     .setDMPermission(false),
 
   async execute(interaction, { config, store }) {
+    // The registration-time gate does not survive being a subcommand, so the
+    // check lives here instead.
+    if (await requireManageGuild(interaction, config)) return undefined;
+
     const sub = interaction.options.getSubcommand();
     const settings = store.guild(interaction.guildId);
 

@@ -1456,6 +1456,37 @@ const cmd = (name) => require(`../src/commands/${name}`);
   const client = { lavalink: { getPlayer: () => player, createPlayer: () => player }, config, store };
   const ctx = { client, config, store };
 
+  console.log(lines.splice(0).join('\n'));
+  console.log('\nSETTINGS ARE ADMIN-ONLY');
+
+  // setDefaultMemberPermissions is a TOP-LEVEL command property. Once every
+  // command became a subcommand of /homer, Discord had nowhere to carry it and
+  // the gate silently disappeared - /homer dj role was open to everyone. The
+  // check now lives in the command, so it cannot be lost to registration again.
+  await test('a normal member cannot change the DJ role', async () => {
+    const i = makeInteraction({ manageGuild: false, options: { __sub: 'role', role: { id: 'r1' } } });
+    await cmd('dj.js').execute(i, ctx);
+    assert.match(text(i), /need the/i, `expected a refusal, got: ${text(i)}`);
+    assert.notStrictEqual(store.guild('g1').djRoleId, 'r1', 'must not have been written');
+  });
+
+  await test('a normal member cannot toggle 24/7', async () => {
+    const i = makeInteraction({ manageGuild: false, options: { enabled: true } });
+    await cmd('247.js').execute(i, ctx);
+    assert.match(text(i), /need the/i);
+    assert.notStrictEqual(store.guild('g1').twentyFourSeven, true, 'must not have been enabled');
+  });
+
+  await test('Manage Server still gets through', async () => {
+    const i = makeInteraction({ manageGuild: true, options: { __sub: 'role', role: { id: 'djrole' } } });
+    await cmd('dj.js').execute(i, ctx);
+    assert.ok(!/need the \*\*Manage Server\*\*/i.test(text(i)), `admin was refused: ${text(i)}`);
+    assert.strictEqual(store.guild('g1').djRoleId, 'djrole', 'the admin change should stick');
+    // Put it back so later tests see the default.
+    store.setGuild('g1', { djRoleId: null });
+  });
+
+
   await test('/play queues a search result and reports its position', async () => {
     const i = makeInteraction({ options: { query: 'some song' } });
     await cmd('play.js').execute(i, ctx);
