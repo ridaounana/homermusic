@@ -79,7 +79,7 @@ commands and buttons.
 
 ```bash
 npm run check      # parses every file, validates all 25 command definitions
-npm run simulate   # 81 offline logic tests against a fake player
+npm run simulate   # 95 offline logic tests against a fake player
 ```
 
 The simulation stubs discord.js and lavalink-client, so it runs with no token

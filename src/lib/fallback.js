@@ -1,4 +1,5 @@
 'use strict';
+const { pickBest } = require('./match');
 
 /**
  * Finds the same song on a different source after playback fails.
@@ -145,10 +146,21 @@ async function findAlternative(player, origin, requester, failures = []) {
       } catch {
         continue; // source disabled or unreachable - try the next one
       }
-      const hit = (result?.tracks || []).find(
-        (t) => t?.info?.uri
-          && !failedUris.has(t.info.uri)
-          && isSameSong(origin?.info, t.info),
+      // Score every candidate rather than taking the first that vaguely
+      // matches. On SoundCloud the top hit for a track is routinely a
+      // re-upload at the wrong length, or an "Afro House" remix - the
+      // duration and artist checks in match.js are what reject those.
+      const candidates = (result?.tracks || []).filter(
+        (t) => t?.info?.uri && !failedUris.has(t.info.uri),
+      );
+      const hit = pickBest(
+        {
+          title: origin?.info?.title,
+          author: origin?.info?.author,
+          duration: origin?.info?.duration,
+          isrc: origin?.info?.isrc,
+        },
+        candidates,
       );
       if (hit) return { track: hit, source: family.name };
     }

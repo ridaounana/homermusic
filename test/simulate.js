@@ -202,6 +202,81 @@ const cmd = (name) => require(`../src/commands/${name}`);
   });
 
   console.log(lines.splice(0).join('\n'));
+  console.log('\nTRACK MATCHING');
+
+  const match = require('../src/lib/match');
+  const cand = (title, author, length, over = {}) => ({ info: { title, author, length, ...over } });
+
+  await test('the AI cover / remix that was actually playing is rejected', () => {
+    // Real results from SoundCloud for this playlist. The remix outranked the
+    // track and was what played.
+    const want = { title: 'AGOGO', author: '7ari', duration: 187000 };
+    const remix = cand('7ari & Ramoon - Agogo (AVORIA Afro Arabic House Remix)', 'AVORIA', 257000);
+    assert.ok(match.score(want, remix.info) < 0, 'a remix at the wrong length must score badly');
+    assert.strictEqual(match.pickBest(want, [remix]), null, 'rather play nothing than the remix');
+  });
+
+  await test('a re-upload at the wrong length loses to the real track', () => {
+    const want = { title: 'PILLAVE', author: 'Shaw', duration: 153000 };
+    const reupload = cand('SHAW - Pillave (Official Audio)(MP3_70K)', 'Hifdi777', 180000);
+    const real = cand('PILLAVE', 'Shaw', 153000);
+    // Order matters: the re-upload is result #1 in the live search.
+    const best = match.pickBest(want, [reupload, real]);
+    assert.strictEqual(best, real, 'the exact-length match by the right artist should win');
+  });
+
+  await test('an exact ISRC beats everything, penalties included', () => {
+    const want = { title: 'Some Song', author: 'Some Artist', duration: 200000, isrc: 'USABC1234567' };
+    // Same recording, but the upload title mentions "live".
+    const viaIsrc = cand('Some Song (live)', 'Whoever', 999000, { isrc: 'usabc1234567' });
+    const other = cand('Some Song', 'Some Artist', 200000);
+    assert.strictEqual(match.pickBest(want, [other, viaIsrc]), viaIsrc, 'ISRC is the recording id');
+    assert.strictEqual(match.score(want, viaIsrc.info), 1000);
+  });
+
+  await test('asking for a remix still finds the remix', () => {
+    // The penalty only applies to variants that were not requested.
+    const want = { title: 'Song (Nightcore Remix)', author: 'Artist', duration: 180000 };
+    const remix = cand('Song (Nightcore Remix)', 'Artist', 180000);
+    assert.ok(match.score(want, remix.info) > 200, 'a requested remix must not be penalised');
+    assert.deepStrictEqual(match.unwantedVariants('Song (Nightcore Remix)', 'Song (Nightcore Remix)'), []);
+  });
+
+  await test('a different song is rejected however good its metadata looks', () => {
+    const want = { title: 'CAMEMBERT', author: 'ZKR', duration: 180000 };
+    // Right artist, right length, wrong song.
+    assert.strictEqual(match.score(want, cand('GTS', 'ZKR', 180000).info), null);
+    assert.strictEqual(match.pickBest(want, [cand('GTS', 'ZKR', 180000)]), null);
+  });
+
+  await test('an official Topic upload is preferred over a random channel', () => {
+    const want = { title: 'One More Time', author: 'Daft Punk', duration: 320000 };
+    const topic = cand('One More Time', 'Daft Punk - Topic', 320000);
+    const random = cand('One More Time', 'MusicChannel', 320000);
+    assert.ok(match.score(want, topic.info) > match.score(want, random.info));
+    assert.strictEqual(match.pickBest(want, [random, topic]), topic);
+  });
+
+  await test('duration is read whichever field name it arrives in', () => {
+    // Lavalink REST says `length`; lavalink-client says `duration`.
+    assert.strictEqual(match.lengthOf({ length: 1000 }), 1000);
+    assert.strictEqual(match.lengthOf({ duration: 2000 }), 2000);
+    assert.ok(Number.isNaN(match.lengthOf({})));
+    const want = { title: 'X Song', author: 'A', duration: 200000 };
+    assert.strictEqual(
+      match.score(want, { title: 'X Song', author: 'A', duration: 200000 }),
+      match.score(want, { title: 'X Song', author: 'A', length: 200000 }),
+    );
+  });
+
+  await test('ISRC is searched first, then artist and title', () => {
+    assert.deepStrictEqual(match.queries({ title: 'T', author: 'A', isrc: 'US123' }),
+      ['"US123"', 'A T', 'T']);
+    assert.deepStrictEqual(match.queries({ title: 'T', author: 'A' }), ['A T', 'T']);
+    assert.deepStrictEqual(match.queries({}), []);
+  });
+
+  console.log(lines.splice(0).join('\n'));
   console.log('\nSOURCE FALLBACK');
 
   // A player whose search() answers from a fixed map of prefix -> tracks.

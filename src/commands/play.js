@@ -4,6 +4,7 @@ const embeds = require('../lib/embeds');
 const { describeFailure } = require('../lib/linkhelp');
 const { fail, getOrCreatePlayer } = require('./_shared');
 const { parseLink, readEmbed } = require('../lib/spotify');
+const { buildSmartTrack } = require('../lib/resolve');
 
 const SOURCES = [
   { name: 'YouTube Music', value: 'ytmsearch' },
@@ -55,14 +56,16 @@ async function loadSpotifyCollection(client, query, requester) {
     };
   }
 
-  const tracks = data.tracks.map((t) => client.lavalink.utils.buildUnresolvedTrack({
+  // Deliberately built through buildSmartTrack rather than the raw
+  // buildUnresolvedTrack: passing the Spotify uri or sourceName sends
+  // lavalink-client down a branch that plays search result #1 unchecked, which
+  // is how AI covers end up playing instead of the track.
+  const tracks = data.tracks.map((t) => buildSmartTrack(client.lavalink, {
     title: t.title,
     author: t.author,
     duration: t.duration,
     artworkUrl: t.artworkUrl,
-    uri: t.url,
     isrc: t.isrc,
-    sourceName: 'spotify',
   }, requester));
 
   return { name: data.name, artist: data.artist, truncated: data.truncated, tracks };
