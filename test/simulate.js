@@ -1254,6 +1254,56 @@ const cmd = (name) => require(`../src/commands/${name}`);
     assert.strictEqual(presence.buildPresence(undefined), null);
   });
 
+  await test('the status line shows what is playing, and falls back when idle', () => {
+    const cfg = { presence: { text: 'CHAOS - JEAN', type: 'listening' } };
+    const track = { info: { title: 'PILLAVE', author: 'Shaw' } };
+
+    assert.strictEqual(presence.describeTrack(track), 'PILLAVE — Shaw');
+    assert.strictEqual(
+      presence.buildPresence(cfg, { nowPlaying: presence.describeTrack(track) }).activities[0].name,
+      'PILLAVE — Shaw',
+    );
+    // Nothing playing: back to the configured line.
+    assert.strictEqual(presence.buildPresence(cfg).activities[0].name, 'CHAOS - JEAN');
+    assert.strictEqual(presence.buildPresence(cfg, { nowPlaying: null }).activities[0].name, 'CHAOS - JEAN');
+
+    assert.strictEqual(presence.describeTrack({ info: { title: 'Solo' } }), 'Solo', 'no artist is fine');
+    assert.strictEqual(presence.describeTrack({ info: {} }), null);
+    const long = presence.describeTrack({ info: { title: 'x'.repeat(200), author: 'y'.repeat(50) } });
+    assert.ok(long.length <= presence.MAX_NAME, 'must fit Discord’s limit');
+  });
+
+  await test('rapid skipping does not spam Discord with presence updates', async () => {
+    // Discord allows roughly 5 presence updates per 20s per connection, and a
+    // skip spree is far faster than a track change. Updates coalesce so the
+    // newest state wins rather than one request going out per skip.
+    const sent = [];
+    const client = { user: { setPresence: (p) => sent.push(p.activities[0].name) } };
+    const cfg = { presence: { text: 'idle', type: 'listening' } };
+
+    presence.setNowPlaying(client, cfg, { info: { title: 'One' } });
+    assert.strictEqual(sent.length, 1, 'the first one goes straight out');
+
+    for (const t of ['Two', 'Three', 'Four', 'Five']) {
+      presence.setNowPlaying(client, cfg, { info: { title: t } });
+    }
+    assert.strictEqual(sent.length, 1, 'the burst is held, not sent one by one');
+
+    await new Promise((r) => setTimeout(r, presence.MIN_INTERVAL_MS + 120));
+    assert.strictEqual(sent.length, 2, 'exactly one catch-up update');
+    assert.strictEqual(sent[1], 'Five', 'and it carries the newest state, not a stale one');
+  });
+
+  await test('an account still playing elsewhere keeps its track showing', () => {
+    // One account serves many servers; its status must not drop to idle just
+    // because one of its players finished.
+    const busy = { lavalink: { players: new Map([['g1', { queue: { current: {} } }]]) } };
+    const done = { lavalink: { players: new Map([['g1', { queue: { current: null } }]]) } };
+    assert.strictEqual(presence.stillPlaying(busy), true);
+    assert.strictEqual(presence.stillPlaying(done), false);
+    assert.strictEqual(presence.stillPlaying({}), false);
+  });
+
   await test('an over-long line is trimmed to what Discord accepts', () => {
     const p = presence.buildPresence({ presence: { text: 'z'.repeat(500) } });
     assert.strictEqual(p.activities[0].name.length, presence.MAX_NAME);

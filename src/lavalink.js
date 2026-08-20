@@ -6,6 +6,7 @@ const { findNextTrack } = require('./lib/autoplay');
 const { findAlternative, familyOf, MAX_ATTEMPTS } = require('./lib/fallback');
 const { YoutubeAudioCache } = require('./lib/ytdlp');
 const ytbridge = require('./lib/ytbridge');
+const { setNowPlaying, stillPlaying } = require('./lib/presence');
 
 /**
  * Creates the Lavalink manager and wires every player event.
@@ -174,7 +175,8 @@ function setupLavalink(client, { config, store, ytCache = null, ytServer = null 
       player.set('fallbackFailures', null);
       player.set('fallbackOrigin', null);
       player.set('ytdlpTried', null);
-      // Playback worked, so the direct YouTube path is healthy again.
+      // This account's status line becomes whatever it is playing.
+      setNowPlaying(client, config, track);
       await clearLastNowPlaying(player);
 
       // Keep the in-flight send so trackError can wait for it before deleting.
@@ -251,6 +253,10 @@ function setupLavalink(client, { config, store, ytCache = null, ytServer = null 
     })
 
     .on('queueEnd', async (player) => {
+      // An account can serve several servers, so only fall back to the idle
+      // line once none of its players has anything current.
+      if (!stillPlaying(client)) setNowPlaying(client, config, null);
+
       // A source retry is in flight: the queue only looks empty because the
       // failed track was dropped. Announcing "queue finished" here is what put
       // one between every retry, and letting autoplay fire would queue an
@@ -284,6 +290,10 @@ function setupLavalink(client, { config, store, ytCache = null, ytServer = null 
     })
 
     .on('playerDestroy', async (player) => {
+      // An account can serve several servers, so only fall back to the idle
+      // line once none of its players has anything current.
+      if (!stillPlaying(client)) setNowPlaying(client, config, null);
+
       await clearLastNowPlaying(player);
     });
 
