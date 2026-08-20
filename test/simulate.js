@@ -431,7 +431,9 @@ const cmd = (name) => require(`../src/commands/${name}`);
       primary: i === 0,
       name: entry.name || `Homer ${i + 1}`,
       ready: true,
-      client: {},
+      // `invited` defaults to true; set false for an account that has a token
+      // but was never added to the server.
+      client: { guilds: { cache: { has: () => entry.invited !== false } } },
       manager: {
         getPlayer: (gid) => (entry.channel && gid === 'g1'
           ? { voiceChannelId: entry.channel, guildId: gid, _name: entry.name }
@@ -485,6 +487,23 @@ const cmd = (name) => require(`../src/commands/${name}`);
     assert.strictEqual(f.acquire('g1', 'vcC').name, 'Homer 2', 'the first free one');
     // Asking again from a channel that already has one returns that one.
     assert.strictEqual(f.acquire('g1', 'vcA').name, 'Homer', 'never steals an in-use instance');
+  });
+
+  await test('an instance that was never invited is not handed out', () => {
+    // A token alone is not enough: the account logs in and looks idle, but
+    // cannot join a server it is not a member of.
+    const f = fakeFleet([
+      { name: 'Homer', channel: 'vcA' },
+      { name: 'Homer 2', invited: false },
+      { name: 'Homer 3', invited: false },
+    ]);
+    assert.strictEqual(f.acquire('g1', 'vcC'), null, 'must not offer an uninvited account');
+    assert.deepStrictEqual(f.notInvited('g1'), ['Homer 2', 'Homer 3']);
+    assert.strictEqual(f.membersOf('g1').length, 1);
+
+    // Once invited it becomes available with no other change.
+    f.instances[1].client.guilds.cache.has = () => true;
+    assert.strictEqual(f.acquire('g1', 'vcC').name, 'Homer 2');
   });
 
   await test('when every instance is busy, nothing is stolen', () => {

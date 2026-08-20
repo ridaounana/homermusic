@@ -72,10 +72,17 @@ async function getOrCreatePlayer(interaction, ctx) {
       const busy = fleet.busyChannels(interaction.guildId)
         .map((b) => `<#${b.channelId}>`)
         .join(', ');
+      // Distinguish "everyone is listening to something" from "the extra bots
+      // were never invited here" - the fix for each is completely different.
+      const uninvited = fleet.notInvited(interaction.guildId);
+      const hint = uninvited.length
+        ? `
+-# ${uninvited.length} more (${uninvited.join(', ')}) are running but not in this server yet.`
+        : '';
       throw new Error(
-        `All ${fleet.size} instances are in use${busy ? ` — ${busy}` : ''}. `
-        + 'Discord allows a bot one voice channel per server, so one has to '
-        + 'finish before another channel can start.',
+        `All ${fleet.membersOf(interaction.guildId).length} instances here are in use`
+        + `${busy ? ` — ${busy}` : ''}. Discord allows a bot one voice channel per `
+        + `server, so one has to finish before another channel can start.${hint}`,
       );
     }
 
@@ -83,8 +90,12 @@ async function getOrCreatePlayer(interaction, ctx) {
     if (existing && existing.voiceChannelId === voice?.id) return existing;
     if (!voice) return null;
 
-    const problem = botCanJoin(voice, interaction.guild.members.me);
-    if (problem) throw new Error(problem);
+    // The permission that matters belongs to the instance being sent in, not to
+    // whichever account received the command. Homer 2 can easily be missing
+    // Connect somewhere Homer has it.
+    const me = instance.client.guilds.cache.get(interaction.guildId)?.members?.me;
+    const problem = botCanJoin(voice, me);
+    if (problem) throw new Error(`${instance.name}: ${problem}`);
 
     const settings = store.guild(interaction.guildId);
     const player = existing || instance.manager.createPlayer({

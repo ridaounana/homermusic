@@ -137,14 +137,30 @@ class Fleet {
     return running.length === 1 ? running[0] : null;
   }
 
+  /** Instances that are actually a member of this server. */
+  membersOf(guildId) {
+    return this.instances.filter((i) => i.ready && i.client?.guilds?.cache?.has?.(guildId));
+  }
+
   /**
    * An instance to serve this channel: the one already there, else any that is
    * free in this guild. Null when every instance is busy elsewhere.
+   *
+   * Membership is checked, not assumed. An account that has been given a token
+   * but never invited logs in perfectly well and looks idle, so without this it
+   * would be handed out and then fail to join a server it is not in.
    */
   acquire(guildId, voiceChannelId) {
     const owner = this.ownerOf(guildId, voiceChannelId);
     if (owner) return owner.instance;
-    return this.instances.find((i) => i.ready && !i.manager?.getPlayer?.(guildId)) || null;
+    return this.membersOf(guildId).find((i) => !i.manager?.getPlayer?.(guildId)) || null;
+  }
+
+  /** Accounts that are logged in but not invited to this server. */
+  notInvited(guildId) {
+    return this.instances
+      .filter((i) => i.ready && !i.client?.guilds?.cache?.has?.(guildId))
+      .map((i) => i.name);
   }
 
   /** Channels this guild's instances are busy in, for the "all in use" reply. */

@@ -9,3 +9,9 @@ plugins/
 # Extra bot accounts live in fleet.json (tokens - never commit)
 fleet.json
 fleet*.json
+
+# Bot avatars are the owner's likeness. Kept out of the public repo by
+# default - they live on the server and in Discord, which is enough.
+# Remove these two lines if you want them versioned.
+assets/*.png
+assets/_preview.png
