@@ -359,6 +359,78 @@ const cmd = (name) => require(`../src/commands/${name}`);
   });
 
   console.log(lines.splice(0).join('\n'));
+  console.log('\nCOMMAND NAMESPACE');
+
+  const ns = require('../src/lib/namespace');
+  const allCommands = fs.readdirSync(path.join(__dirname, '..', 'src', 'commands'))
+    .filter((f) => f.endsWith('.js') && !f.startsWith('_'))
+    .map((f) => require(path.join(__dirname, '..', 'src', 'commands', f)));
+
+  await test('every command folds into one branded command', () => {
+    const built = ns.buildNamespacedCommand(allCommands, { name: 'homer', description: 'Music' });
+    assert.strictEqual(built.name, 'homer');
+    assert.strictEqual(built.options.length, allCommands.length,
+      'every command must appear exactly once');
+    // Discord rejects anything past this and the API error does not say so.
+    assert.ok(built.options.length <= ns.MAX_OPTIONS,
+      `${built.options.length} exceeds Discord's ${ns.MAX_OPTIONS}-option limit`);
+    const names = built.options.map((o) => o.name);
+    assert.strictEqual(new Set(names).size, names.length, 'duplicate subcommand name');
+    for (const n of names) assert.ok(ns.NAME_RE.test(n), `invalid subcommand name: ${n}`);
+  });
+
+  await test('commands that already nest become groups, not subcommands', () => {
+    const built = ns.buildNamespacedCommand(allCommands, { name: 'homer', description: 'Music' });
+    const byName = Object.fromEntries(built.options.map((o) => [o.name, o]));
+    // Discord allows command -> group -> subcommand and no deeper, so /playlist
+    // and /dj must arrive as groups or registration is rejected.
+    for (const g of ['playlist', 'dj']) {
+      assert.strictEqual(byName[g].type, 2, `${g} should be a subcommand group`);
+      assert.ok(byName[g].options.length > 0);
+      for (const sub of byName[g].options) {
+        assert.strictEqual(sub.type, 1, `${g} ${sub.name} should be a subcommand`);
+        assert.ok(!(sub.options || []).some((o) => o.type === 1 || o.type === 2),
+          'nesting deeper than group -> subcommand is not allowed');
+      }
+    }
+    assert.strictEqual(byName.play.type, 1, 'play should be a plain subcommand');
+    assert.ok(byName.play.options.some((o) => o.name === 'query'), 'play keeps its query option');
+  });
+
+  await test('too many commands fails at build time, not at registration', () => {
+    const many = Array.from({ length: ns.MAX_OPTIONS + 1 }, (_, i) => ({
+      data: { toJSON: () => ({ name: `c${i}`, description: 'x', options: [] }) },
+    }));
+    assert.throws(() => ns.buildNamespacedCommand(many, { name: 'homer', description: 'M' }),
+      /limit of 25/);
+    assert.throws(() => ns.buildNamespacedCommand([], { name: 'Not Valid', description: 'M' }),
+      /not a valid command name/);
+  });
+
+  await test('an interaction resolves to the module that owns it', () => {
+    const fake = (name, group, sub) => ({
+      commandName: name,
+      options: { getSubcommandGroup: () => group, getSubcommand: () => sub },
+    });
+    // /homer play -> the play module
+    assert.strictEqual(ns.resolveCommandName(fake('homer', null, 'play'), 'homer'), 'play');
+    // /homer playlist save -> the playlist module, which still reads "save"
+    assert.strictEqual(ns.resolveCommandName(fake('homer', 'playlist', 'save'), 'homer'), 'playlist');
+    assert.strictEqual(ns.resolveCommandName(fake('homer', 'dj', 'role'), 'homer'), 'dj');
+    // With the namespace off, the command name is used directly.
+    assert.strictEqual(ns.resolveCommandName(fake('play', null, null), ''), 'play');
+    // A stray command that is not ours must not be swallowed.
+    assert.strictEqual(ns.resolveCommandName(fake('other', null, null), 'homer'), 'other');
+  });
+
+  await test('help text and hints follow the configured namespace', () => {
+    assert.strictEqual(ns.commandPath({ commandNamespace: 'homer' }, 'play'), '/homer play');
+    assert.strictEqual(ns.commandPath({ commandNamespace: 'homer' }, 'playlist save'), '/homer playlist save');
+    assert.strictEqual(ns.commandPath({ commandNamespace: '' }, 'play'), '/play');
+    assert.strictEqual(ns.commandPath({}, 'play'), '/play');
+  });
+
+  console.log(lines.splice(0).join('\n'));
   console.log('\nYOUTUBE VIA YT-DLP');
 
   const { YoutubeAudioCache } = require('../src/lib/ytdlp');

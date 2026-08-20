@@ -126,7 +126,7 @@ module.exports = {
     if (sub === 'list') {
       const all = store.listPlaylists(userId);
       if (!all.length) {
-        return fail(interaction, config, 'You have no saved playlists. Queue some music and use `/playlist save`.');
+        return fail(interaction, config, `You have no saved playlists. Queue some music and use \`${commandPath(config, 'playlist save')}\`.`);
       }
       const lines = all
         .sort((a, b) => b.updatedAt - a.updatedAt)

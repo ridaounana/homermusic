@@ -1,6 +1,7 @@
 'use strict';
 const { EmbedBuilder } = require('discord.js');
 const { duration, progressBar, trackLink, truncate, totalQueueDuration } = require('./format');
+const { commandPath } = require('./namespace');
 
 const SOURCE_ICONS = {
   youtube: '🔴', youtubemusic: '🔴', soundcloud: '🟠', bandcamp: '🔵',
@@ -139,7 +140,7 @@ function queuePage(config, player, page, perPage = 10) {
     .setDescription(
       nowLine + (lines.length
         ? lines.join('\n')
-        : '-# Nothing queued — add something with `/play`.')
+        : `-# Nothing queued — add something with \`${commandPath(config, 'play')}\`.`)
     );
 
   return setBrandFooter(embed, config,

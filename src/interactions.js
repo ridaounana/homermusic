@@ -4,6 +4,7 @@ const embeds = require('./lib/embeds');
 const { ID, controlRows, queueNavRows } = require('./lib/controls');
 const { checkControl } = require('./lib/permissions');
 const { stripTrack } = require('./lib/track');
+const { resolveCommandName, commandPath } = require('./lib/namespace');
 
 const EPHEMERAL = { flags: MessageFlags.Ephemeral };
 
@@ -12,13 +13,15 @@ async function handleInteraction(client, interaction) {
 
   try {
     if (interaction.isChatInputCommand()) {
-      const command = client.commands.get(interaction.commandName);
+      // Commands are registered under one branded name, so the module is found
+      // by subcommand rather than by the command name itself.
+      const command = client.commands.get(resolveCommandName(interaction, config.commandNamespace));
       if (!command) return;
       return await command.execute(interaction, { client, config, store });
     }
 
     if (interaction.isAutocomplete()) {
-      const command = client.commands.get(interaction.commandName);
+      const command = client.commands.get(resolveCommandName(interaction, config.commandNamespace));
       if (command?.autocomplete) return await command.autocomplete(interaction, { client, config, store });
       return;
     }
@@ -124,7 +127,8 @@ async function handleControlButton(client, interaction) {
       if (already) { notice = '⭐ Already in your **liked** playlist.'; break; }
       store.savePlaylist(interaction.user.id, 'liked', [...liked, stripTrack(track)]);
       store.flush();
-      notice = `⭐ Saved to your **liked** playlist (${liked.length + 1} tracks). Load it with \`/playlist play liked\`.`;
+      notice = `⭐ Saved to your **liked** playlist (${liked.length + 1} tracks). `
+        + `Load it with \`${commandPath(config, 'playlist play liked')}\`.`;
       break;
     }
 

@@ -27,6 +27,12 @@ const config = {
   guildId: process.env.GUILD_ID || '',
 
   botName: process.env.BOT_NAME || 'Music',
+  // Every command is registered under this one name, so a server full of music
+  // bots does not give you six identical /play entries to choose between.
+  // Blank registers them flat, the way it worked before.
+  commandNamespace: (process.env.COMMAND_NAMESPACE ?? 'homer').trim().toLowerCase(),
+  commandNamespaceDescription:
+    process.env.COMMAND_NAMESPACE_DESC || 'Music: play, queue, filters, playlists',
   embedColor: parseInt((process.env.EMBED_COLOR || '9B59B6').replace('#', ''), 16),
   // Shown in the footer of the now-playing and queue embeds. Set empty to drop it.
   brandFooter: process.env.BRAND_FOOTER ?? 'built for chaos333 community',

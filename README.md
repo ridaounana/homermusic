@@ -32,17 +32,37 @@ systemd unit, firewall rules and a troubleshooting table.
 
 ## Commands
 
-**Playback** `/play` `/search` `/pause` `/resume` `/skip` `/back` `/stop` `/replay` `/seek` `/volume` `/join` `/leave`
+Everything is registered under **one branded command**, set by
+`COMMAND_NAMESPACE` (default `homer`):
 
-**Queue** `/queue` `/nowplaying` `/loop` `/shuffle` `/remove` `/move` `/clear` `/autoplay`
+**Playback** `/homer play` `search` `pause` `resume` `skip` `back` `stop` `replay` `seek` `volume` `join` `leave`
 
-**Sound** `/filter`
+**Queue** `/homer queue` `nowplaying` `loop` `shuffle` `remove` `move` `clear` `autoplay`
 
-**Playlists** `/playlist save|play|list|show|delete`
+**Sound** `/homer filter`
 
-**Admin** `/dj role` `/dj announce` `/dj settings` `/247`
+**Playlists** `/homer playlist save|play|list|show|delete`
+
+**Admin** `/homer dj role` `dj announce` `dj settings` `247`
 
 Most of these are also buttons on the now-playing message.
+
+### Why one command instead of 25
+
+A server running several music bots ends up with five or six identical `/play`
+entries in the picker and no way to tell them apart. Registering a single
+`/homer` means typing the brand shows this bot and nothing else, because no
+other bot owns that word.
+
+The command files are unchanged — each still defines a normal top-level
+command, and `src/lib/namespace.js` folds them into subcommands at registration
+time. Set `COMMAND_NAMESPACE=` (empty) to go back to flat `/play`, `/skip` and
+the rest without touching any code.
+
+One limit worth knowing: Discord allows **25 options per command**, and
+subcommands and groups both count against it. There are exactly 25 today, so a
+26th command means folding related ones into a group first. `npm run deploy`
+fails with that message rather than letting the API reject it opaquely.
 
 ## Who can control playback
 
