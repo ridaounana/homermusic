@@ -129,19 +129,35 @@ from one video rather than curated.
 Detection and fetching live in `src/lib/playlist.js`, and both services return
 the same shape, so `/play` does not branch on the service.
 
-### When YouTube refuses to stream
+### YouTube audio comes from yt-dlp, not Lavalink
 
-yt-dlp used to be a recovery step: let Lavalink try, re-fetch the video when it
-failed. That is right when failures are occasional and wrong when YouTube is
-refusing the host outright — then *every* track has to fail first, and each
-failure costs an exception, a queue advance by autoSkip, a recovery search and
-a replacement competing for the same slot. A 25-track playlist did that 25
-times, which is what made playback look like it was skipping and spamming.
+Lavalink is still the audio engine — decoding, filters, the Discord voice
+connection, and every other source. What it no longer does is *fetch* YouTube
+audio, because `youtube-source` is refused by every one of its clients for long
+stretches from a datacenter IP while yt-dlp keeps working.
 
-`src/lib/ytbridge.js` counts the refusals. After two in a row, YouTube tracks
-are fetched with yt-dlp **before** Lavalink is asked to play them — no failure,
-no recovery, no queue churn. The state expires after ten minutes so a temporary
-block does not permanently disable the fast path.
+`YOUTUBE_VIA_YTDLP` controls it:
+
+| Mode | Behaviour |
+|---|---|
+| `always` (default) | YouTube audio is always fetched with yt-dlp and served to Lavalink over loopback |
+| `auto` | Lavalink tries first; yt-dlp steps in after two refusals, and is retried after ten minutes |
+| `never` | Lavalink only |
+
+`always` is the default because waiting for failures is what made playlists
+unreliable. Each switch cost a dead track, a queue advance by autoSkip and a
+replacement queued behind whatever had already started — so a curated playlist
+came out reordered. Fetching up front removes the decision entirely: nothing
+fails, so nothing has to be recovered.
+
+Cost is roughly two seconds and a few MB per track, cached and LRU-evicted.
+
+One bug worth recording, since it looked exactly like YouTube being broken:
+downloads are written as `<id>.tmp-<pid>.<ext>` and renamed on success, but the
+cache lookup matched that name too. A scratch file left behind by a killed
+process therefore looked like a cache hit, Lavalink refused the half-written
+file, and the track fell back to the YouTube source that could not play it.
+`cached()` now ignores `.tmp-*` and `.part`, and stale ones are swept at start.
 
 ## Who can control playback
 
@@ -158,7 +174,7 @@ commands and buttons.
 
 ```bash
 npm run check      # parses every file, validates all 25 command definitions
-npm run simulate   # 105 offline logic tests against a fake player
+npm run simulate   # 108 offline logic tests against a fake player
 ```
 
 The simulation stubs discord.js and lavalink-client, so it runs with no token

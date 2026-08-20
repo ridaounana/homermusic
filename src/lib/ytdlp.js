@@ -118,10 +118,39 @@ class YoutubeAudioCache {
   async cached(videoId) {
     try {
       const names = await fsp.readdir(this.dir);
-      return names.find((n) => n.startsWith(`${videoId}.`) && !n.endsWith('.part')) || null;
+      // A download in progress is written as `<id>.tmp-<pid>.<ext>` and renamed
+      // on success, so both it and yt-dlp's own `.part` must be excluded.
+      // Matching them meant handing Lavalink a half-written or already-renamed
+      // file, which it refused - and the track then fell back to the YouTube
+      // source that cannot play it. Stale ones survive a killed process, so
+      // this cannot rely on them being absent.
+      return names.find((n) => n.startsWith(`${videoId}.`)
+        && !n.endsWith('.part')
+        && !n.includes('.tmp-')) || null;
     } catch {
       return null;
     }
+  }
+
+  /** Removes scratch files left behind by a process that died mid-download. */
+  async sweepPartials(maxAgeMs = 10 * 60 * 1000) {
+    let removed = 0;
+    try {
+      const names = await fsp.readdir(this.dir);
+      const now = Date.now();
+      for (const name of names) {
+        if (!name.includes('.tmp-') && !name.endsWith('.part')) continue;
+        const full = path.join(this.dir, name);
+        try {
+          const stat = await fsp.stat(full);
+          if (now - stat.mtimeMs < maxAgeMs) continue; // still being written
+          await fsp.unlink(full);
+          removed += 1;
+        } catch { /* already gone */ }
+      }
+    } catch { /* no cache dir yet */ }
+    if (removed) console.log(`[ytdlp] cleared ${removed} stale partial download(s)`);
+    return removed;
   }
 
   async _download(videoId) {

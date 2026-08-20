@@ -4,7 +4,7 @@ const embeds = require('../lib/embeds');
 const { describeFailure } = require('../lib/linkhelp');
 const { fail, getOrCreatePlayer } = require('./_shared');
 const { detect, resolve: resolveCollection } = require('../lib/playlist');
-const { buildSmartTrack } = require('../lib/resolve');
+const { buildSmartTrack, wrapYoutubeTrack } = require('../lib/resolve');
 
 const SOURCES = [
   { name: 'YouTube Music', value: 'ytmsearch' },
@@ -72,7 +72,11 @@ async function queueCollection(interaction, ctx, { player, query, playNext }) {
       artworkUrl: t.artworkUrl,
       isrc: t.isrc,
     }, interaction.user))
-    : wanted;
+    // Already playable, but still wrapped: it defers the "is YouTube refusing
+    // us right now" decision to the moment each track plays, so a blocked host
+    // is handled before playback rather than after it fails and reorders the
+    // playlist.
+    : wanted.map((t) => wrapYoutubeTrack(client.lavalink, t, interaction.user));
 
   await player.queue.add(queued, playNext ? 0 : undefined);
 

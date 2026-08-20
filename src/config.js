@@ -104,6 +104,10 @@ const config = {
     cacheMaxBytes: num(process.env.YT_CACHE_MAX_MB, 2048) * 1024 * 1024,
     port: num(process.env.YT_CACHE_PORT, 2444),
     timeoutMs: num(process.env.YTDLP_TIMEOUT_MS, 90000),
+    // always | auto | never. Lavalink's YouTube source is refused for long
+    // stretches from a datacenter IP while yt-dlp keeps working, so YouTube
+    // audio is fetched up front by default rather than after a failure.
+    youtubeMode: (process.env.YOUTUBE_VIA_YTDLP || 'always').trim().toLowerCase(),
   },
 };
 

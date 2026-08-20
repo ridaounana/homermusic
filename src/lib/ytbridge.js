@@ -15,8 +15,17 @@ const { YoutubeAudioCache } = require('./ytdlp');
  *
  * So failures are counted. Once YouTube has refused twice, it is treated as
  * degraded and YouTube tracks are fetched with yt-dlp *before* Lavalink is
- * asked to play them - no failure, no recovery, no queue churn. The state
- * expires so a temporary block does not permanently disable the fast path.
+ * asked to play them - no failure, no recovery, no queue churn.
+ *
+ * Recovery is by expiry alone, deliberately. The obvious alternative - clear
+ * the state when a YouTube track plays successfully - cannot tell a real stream
+ * from a cached file, because a cached file is given YouTube's name and artwork
+ * so that it displays correctly. Worse, lavalink-client resolves the *next*
+ * track before the current one reports starting, so any shared flag describes
+ * the wrong track. Every cached play then cleared the state and the following
+ * track went back to failing. A timer has none of those failure modes: after
+ * the window the direct path is simply tried again, and if YouTube is still
+ * refusing, two failures put it back.
  */
 
 // Two failures in a row is a blocked IP, not one bad video.
@@ -29,11 +38,38 @@ const state = {
   server: null,
   failures: 0,
   degradedSince: 0,
+  // always | auto | never
+  mode: 'always',
 };
 
-function configure({ cache = null, server = null } = {}) {
+function configure({ cache = null, server = null, mode = 'always' } = {}) {
   state.cache = cache;
   state.server = server;
+  state.mode = ['always', 'auto', 'never'].includes(mode) ? mode : 'always';
+}
+
+/**
+ * Should this YouTube track be fetched with yt-dlp instead of streamed by
+ * Lavalink?
+ *
+ * `always` is the default because Lavalink's YouTube source and yt-dlp are not
+ * equally reliable from a datacenter IP: the plugin gets refused by every
+ * client for long stretches, while yt-dlp keeps working. Waiting for failures
+ * before switching means each switch costs a dead track, a queue advance and a
+ * reordered playlist - and the state then has to be un-set, which is where it
+ * kept going wrong. Fetching up front every time removes the decision.
+ *
+ * Lavalink still does everything else: search, decoding, filters, the voice
+ * connection. Only the fetching of YouTube audio moves.
+ *
+ * `auto` keeps the old behaviour of only stepping in once YouTube has refused
+ * twice, for hosts where the direct path is reliable and the ~2s and disk of a
+ * fetch are not worth paying by default.
+ */
+function shouldBypass() {
+  if (!ready() || state.mode === 'never') return false;
+  if (state.mode === 'always') return true;
+  return degraded();
 }
 
 /** yt-dlp is installed and the loopback file server is up. */
@@ -81,14 +117,28 @@ async function toLocalTrack(player, track, display = null) {
   const videoId = YoutubeAudioCache.videoId(track);
   if (!videoId) return null;
 
-  const name = await state.cache.fetch(videoId).catch(() => null);
-  if (!name) return null;
+  const name = await state.cache.fetch(videoId).catch((e) => {
+    console.warn(`[ytbridge] fetch threw for ${videoId}:`, e?.message || e);
+    return null;
+  });
+  if (!name) {
+    // Falling back means handing Lavalink a track that will very likely fail,
+    // so it is worth saying which video and not just silently degrading.
+    console.warn(`[ytbridge] could not cache ${videoId} — falling back to Lavalink`);
+    return null;
+  }
 
   const result = await player
     .search({ query: state.server.urlFor(name) }, track?.requester)
-    .catch(() => null);
+    .catch((e) => {
+      console.warn(`[ytbridge] loading cached ${name} failed:`, e?.message || e);
+      return null;
+    });
   const local = result?.tracks?.[0];
-  if (!local) return null;
+  if (!local) {
+    console.warn(`[ytbridge] Lavalink would not load cached ${name}`);
+    return null;
+  }
 
   const from = display?.info || display || track?.info || {};
   Object.assign(local.info, {
@@ -99,11 +149,16 @@ async function toLocalTrack(player, track, display = null) {
     duration: Number.isFinite(from.duration) ? from.duration : local.info.duration,
     sourceName: 'youtube',
   });
+  // The display fields above make this look like a YouTube track, which is the
+  // point - but it must not be mistaken for evidence that YouTube is working,
+  // or every cached track would clear the degraded state and the next one would
+  // go back to failing first.
+  local.info.ytdlpCached = true;
   local.requester = track?.requester ?? display?.requester;
   return local;
 }
 
 module.exports = {
-  configure, ready, degraded, recordFailure, recordSuccess, toLocalTrack,
-  FAILURES_TO_DEGRADE, RECHECK_AFTER_MS, _state: state,
+  configure, ready, degraded, shouldBypass, recordFailure, recordSuccess,
+  toLocalTrack, FAILURES_TO_DEGRADE, RECHECK_AFTER_MS, _state: state,
 };

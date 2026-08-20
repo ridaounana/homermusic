@@ -48,7 +48,7 @@ function buildSmartTrack(manager, want, requester, { search = null } = {}) {
       // it costs an exception, a queue advance and a replacement per track -
       // which on a long playlist is what looked like skipping and spam.
       let chosen = best;
-      if (ytbridge.ready() && ytbridge.degraded()) {
+      if (ytbridge.shouldBypass()) {
         const local = await ytbridge.toLocalTrack(player, best, { info: { ...want } })
           .catch(() => null);
         if (local) chosen = local;
@@ -75,4 +75,44 @@ function buildSmartTrack(manager, want, requester, { search = null } = {}) {
   return track;
 }
 
-module.exports = { buildSmartTrack };
+/**
+ * Wraps an already-playable YouTube track so the yt-dlp decision happens at
+ * play time rather than after a failure.
+ *
+ * A YouTube playlist arrives as real Lavalink tracks, so nothing about them
+ * passes through buildSmartTrack - which meant the "YouTube is refusing us"
+ * state was never consulted for them. Every track in the playlist failed,
+ * recovered, and had its replacement queued behind whatever autoSkip had
+ * already started, which reorders a playlist the user chose the order of.
+ *
+ * Wrapping defers the choice: when YouTube is healthy the original track plays
+ * untouched; when it is not, the file is fetched first and nothing fails.
+ */
+function wrapYoutubeTrack(manager, track, requester) {
+  const info = track?.info || {};
+  const wrapper = manager.utils.buildUnresolvedTrack({
+    title: info.title,
+    author: info.author,
+    duration: info.duration,
+    artworkUrl: info.artworkUrl,
+    isrc: info.isrc,
+  }, requester);
+
+  wrapper.resolve = async function resolve(player) {
+    let chosen = track;
+    if (ytbridge.shouldBypass()) {
+      const local = await ytbridge.toLocalTrack(player, track, track).catch(() => null);
+      if (local) chosen = local;
+    }
+    for (const prop of Object.getOwnPropertyNames(this)) delete this[prop];
+    delete this[UnresolvedTrackSymbol];
+    Object.defineProperty(this, TrackSymbol, { configurable: true, value: true });
+    Object.assign(this, chosen);
+    this.requester = requester ?? track?.requester;
+    return this;
+  };
+
+  return wrapper;
+}
+
+module.exports = { buildSmartTrack, wrapYoutubeTrack };

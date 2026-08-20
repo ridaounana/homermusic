@@ -58,6 +58,8 @@ if (config.ytdlp.enabled && config.ytdlp.bin) {
     ytServer = createCacheServer({ dir: config.ytdlp.cacheDir, port: config.ytdlp.port });
     ytServer.listen().catch((e) => console.error('[ytserve] failed to listen:', e?.message || e));
     ytCache.evict().catch(() => {});
+    // A killed process leaves scratch files that look cached but are not.
+    ytCache.sweepPartials().catch(() => {});
   } else {
     console.warn(`[ytdlp] ${config.ytdlp.bin} is not executable — YouTube recovery disabled`);
     ytCache = null;
@@ -76,7 +78,8 @@ if (client.spotify.enabled()) console.log('[spotify] album lookup enabled');
 
 // Lets the resolver reach yt-dlp, so a YouTube track can be fetched before
 // playback is attempted once YouTube starts refusing this host.
-ytbridge.configure({ cache: ytCache, server: ytServer });
+ytbridge.configure({ cache: ytCache, server: ytServer, mode: config.ytdlp.youtubeMode });
+if (ytCache) console.log(`[ytbridge] youtube audio via yt-dlp: ${config.ytdlp.youtubeMode}`);
 
 setupLavalink(client, { config, store, ytCache, ytServer });
 

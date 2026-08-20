@@ -305,6 +305,110 @@ const cmd = (name) => require(`../src/commands/${name}`);
     s.failures = 0; s.degradedSince = 0;
   });
 
+  await test('a YouTube playlist track defers the yt-dlp decision to play time', async () => {
+    // These arrive as real, playable tracks, so nothing about them went through
+    // the resolver that consults the "YouTube is refusing us" state. Every one
+    // failed, recovered, and had its replacement queued behind whatever
+    // autoSkip had already started - which reorders a curated playlist.
+    const { wrapYoutubeTrack } = require('../src/lib/resolve');
+    const { LavalinkManager } = require('lavalink-client');
+    const manager = new LavalinkManager({
+      nodes: [{ id: 'n', host: '127.0.0.1', port: 2333, authorization: 'x' }],
+      sendToShard: () => {}, client: { id: '1', username: 't' },
+    });
+
+    const real = makeTrack('SMALL X - ALBI', { sourceName: 'youtube', identifier: 'ZQBzjyb3QMo' });
+    const s = ytbridge._state;
+
+    // Healthy: the original track plays, untouched.
+    s.failures = 0; s.degradedSince = 0;
+    ytbridge.configure({ cache: null, server: null });
+    const noop = { set() {}, get() {} };
+    const healthy = wrapYoutubeTrack(manager, real, { id: 'u1' });
+    assert.strictEqual(healthy.info.title, 'SMALL X - ALBI', 'keeps its display info while queued');
+    await healthy.resolve(noop);
+    assert.strictEqual(healthy.info.identifier, 'ZQBzjyb3QMo', 'resolves to the original');
+
+    // Degraded with yt-dlp available: the local file is used instead, and the
+    // track never has to fail first.
+    const localTrack = makeTrack('cached', { sourceName: 'http', identifier: 'local' });
+    ytbridge.configure({
+      cache: { available: () => true, fetch: async () => 'ZQBzjyb3QMo.mp4' },
+      server: { urlFor: (n) => `http://127.0.0.1:2444/${n}` },
+    });
+    s.failures = 2; s.degradedSince = Date.now();
+    const marks = {};
+    const player = {
+      search: async () => ({ tracks: [localTrack] }),
+      set: (k, v) => { marks[k] = v; }, get: (k) => marks[k],
+    };
+    const degraded = wrapYoutubeTrack(manager, real, { id: 'u1' });
+    await degraded.resolve(player);
+    assert.strictEqual(degraded.info.identifier, 'local', 'plays the cached file');
+    assert.strictEqual(degraded.info.title, 'SMALL X - ALBI', 'but still shows the real title');
+
+    s.failures = 0; s.degradedSince = 0;
+    ytbridge.configure({ cache: null, server: null });
+  });
+
+  await test('a half-written download is never served as cached', async () => {
+    // _download writes <id>.tmp-<pid>.<ext> and renames on success. cached()
+    // matched that too, so an in-progress or abandoned file was handed to
+    // Lavalink, refused, and the track fell back to the YouTube source that
+    // cannot play it. Stale ones outlive a killed process, so absence cannot
+    // be assumed.
+    const { YoutubeAudioCache } = require('../src/lib/ytdlp');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytcache-'));
+    const c = new YoutubeAudioCache({ bin: '', nodePath: '', dir });
+
+    fs.writeFileSync(path.join(dir, 'ABBF27RzcsU.tmp-12345.mp4'), 'partial');
+    fs.writeFileSync(path.join(dir, 'ABBF27RzcsU.mp4.part'), 'partial');
+    assert.strictEqual(await c.cached('ABBF27RzcsU'), null, 'partials are not cached files');
+
+    fs.writeFileSync(path.join(dir, 'ABBF27RzcsU.mp4'), 'complete');
+    assert.strictEqual(await c.cached('ABBF27RzcsU'), 'ABBF27RzcsU.mp4', 'the finished file wins');
+
+    // Old scratch files are cleaned; recent ones may still be downloading.
+    const old = new Date(Date.now() - 60 * 60 * 1000);
+    fs.utimesSync(path.join(dir, 'ABBF27RzcsU.tmp-12345.mp4'), old, old);
+    fs.writeFileSync(path.join(dir, 'other.tmp-999.mp4'), 'fresh');
+    const removed = await c.sweepPartials();
+    assert.ok(removed >= 1, 'stale scratch files are removed');
+    assert.ok(fs.existsSync(path.join(dir, 'other.tmp-999.mp4')), 'a fresh one is left alone');
+    assert.ok(fs.existsSync(path.join(dir, 'ABBF27RzcsU.mp4')), 'real cache entries survive');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await test('YOUTUBE_VIA_YTDLP decides without waiting for a failure', () => {
+    const s = ytbridge._state;
+    const cache = { available: () => true, fetch: async () => 'x.mp4' };
+    const server = { urlFor: (n) => `http://127.0.0.1:2444/${n}` };
+
+    // always: no failure is needed, so there is no state to get wrong.
+    ytbridge.configure({ cache, server, mode: 'always' });
+    s.failures = 0; s.degradedSince = 0;
+    assert.strictEqual(ytbridge.shouldBypass(), true, 'always means always');
+
+    // auto: the old behaviour, for hosts where the direct path works.
+    ytbridge.configure({ cache, server, mode: 'auto' });
+    s.failures = 0; s.degradedSince = 0;
+    assert.strictEqual(ytbridge.shouldBypass(), false, 'auto waits for evidence');
+    ytbridge.recordFailure(); ytbridge.recordFailure();
+    assert.strictEqual(ytbridge.shouldBypass(), true, 'auto steps in once refused');
+
+    ytbridge.configure({ cache, server, mode: 'never' });
+    assert.strictEqual(ytbridge.shouldBypass(), false, 'never means Lavalink only');
+
+    // An unknown value must not silently disable the working path.
+    ytbridge.configure({ cache, server, mode: 'nonsense' });
+    assert.strictEqual(ytbridge.shouldBypass(), true, 'falls back to always');
+
+    // Without yt-dlp there is nothing to bypass to, whatever the mode says.
+    ytbridge.configure({ cache: null, server: null, mode: 'always' });
+    assert.strictEqual(ytbridge.shouldBypass(), false);
+    s.failures = 0; s.degradedSince = 0;
+  });
+
   await test('without yt-dlp configured nothing changes', async () => {
     ytbridge.configure({ cache: null, server: null });
     assert.strictEqual(ytbridge.ready(), false);

@@ -110,37 +110,20 @@ function setupLavalink(client, { config, store, ytCache = null, ytServer = null 
    * overrides only affect what people see. Returns true if it is now playing.
    */
   async function playFromYoutubeCache(player, origin, failed) {
-    if (!ytCache || !ytServer) return false;
+    if (!ytbridge.ready()) return false;
     // Only worth trying once per song; a second failure means the file itself
     // is not playable, not that YouTube was blocking us.
     if (player.get('ytdlpTried')) return false;
-
-    const videoId = YoutubeAudioCache.videoId(origin) || YoutubeAudioCache.videoId(failed);
-    if (!videoId) return false;
     player.set('ytdlpTried', true);
 
-    const name = await ytCache.fetch(videoId);
-    if (!name) return false;
-
-    const result = await player.search({ query: ytServer.urlFor(name) }, origin?.requester)
+    const local = await ytbridge.toLocalTrack(player, failed || origin, origin)
       .catch(() => null);
-    const local = result?.tracks?.[0];
     if (!local) return false;
-
-    const from = origin?.info || {};
-    Object.assign(local.info, {
-      title: from.title ?? local.info.title,
-      author: from.author ?? local.info.author,
-      artworkUrl: from.artworkUrl ?? local.info.artworkUrl,
-      uri: from.uri ?? local.info.uri,
-      sourceName: 'youtube',
-    });
-    local.requester = origin?.requester ?? failed?.requester;
 
     try {
       // Same autoSkip hazard as any other replacement - go through the guard.
       await playReplacement(player, origin, local);
-      console.log(`[ytdlp] playing "${from.title || videoId}" from cache`);
+      console.log(`[ytdlp] playing "${origin?.info?.title || local.info.title}" from cache`);
       return true;
     } catch (e) {
       console.error('[ytdlp] local playback failed:', e?.message || e);
@@ -192,7 +175,6 @@ function setupLavalink(client, { config, store, ytCache = null, ytServer = null 
       player.set('fallbackOrigin', null);
       player.set('ytdlpTried', null);
       // Playback worked, so the direct YouTube path is healthy again.
-      if (String(track?.info?.sourceName || '').includes('youtube')) ytbridge.recordSuccess();
       await clearLastNowPlaying(player);
 
       // Keep the in-flight send so trackError can wait for it before deleting.
