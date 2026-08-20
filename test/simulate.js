@@ -359,6 +359,59 @@ const cmd = (name) => require(`../src/commands/${name}`);
   });
 
   console.log(lines.splice(0).join('\n'));
+  console.log('\nYOUTUBE VIA YT-DLP');
+
+  const { YoutubeAudioCache } = require('../src/lib/ytdlp');
+  const ytserve = require('../src/lib/ytserve');
+
+  await test('a YouTube video id is recovered from id or url', () => {
+    const yt = (over) => makeTrack('T', { sourceName: 'youtube', ...over });
+    assert.strictEqual(YoutubeAudioCache.videoId(yt({ identifier: 'dQw4w9WgXcQ' })), 'dQw4w9WgXcQ');
+    assert.strictEqual(YoutubeAudioCache.videoId(
+      yt({ identifier: '', uri: 'https://www.youtube.com/watch?v=eBNWq-bYxWg' })), 'eBNWq-bYxWg');
+    assert.strictEqual(YoutubeAudioCache.videoId(
+      yt({ identifier: '', uri: 'https://youtu.be/FGBhQbmPwH8' })), 'FGBhQbmPwH8');
+    // Non-YouTube tracks must not be routed through yt-dlp.
+    assert.strictEqual(YoutubeAudioCache.videoId(
+      makeTrack('T', { sourceName: 'soundcloud', identifier: 'dQw4w9WgXcQ' })), null);
+    // A junk identifier must not become a shell argument.
+    assert.strictEqual(YoutubeAudioCache.videoId(
+      yt({ identifier: '../../etc/passwd', uri: 'https://x/y' })), null);
+  });
+
+  await test('the cache server only serves plain cache filenames', () => {
+    const ok = ['dQw4w9WgXcQ.m4a', 'eBNWq-bYxWg.webm', 'FGBhQbmPwH8.mp4'];
+    for (const n of ok) assert.ok(ytserve.NAME_RE.test(n), `should allow ${n}`);
+    const bad = [
+      '../../../etc/passwd', '..%2Fsecret', 'guilds.json', '.env',
+      'dQw4w9WgXcQ', 'dQw4w9WgXcQ.m4a.part', 'sub/dir/file.m4a', '',
+    ];
+    for (const n of bad) assert.ok(!ytserve.NAME_RE.test(n), `should reject ${n}`);
+  });
+
+  await test('Range headers are parsed the way a seeking player sends them', () => {
+    const size = 1000;
+    assert.deepStrictEqual(ytserve.parseRange('bytes=0-499', size), { start: 0, end: 499 });
+    // Open-ended: play from an offset to the end.
+    assert.deepStrictEqual(ytserve.parseRange('bytes=500-', size), { start: 500, end: 999 });
+    // Suffix form: the last N bytes.
+    assert.deepStrictEqual(ytserve.parseRange('bytes=-200', size), { start: 800, end: 999 });
+    // An end past EOF is clamped rather than rejected.
+    assert.deepStrictEqual(ytserve.parseRange('bytes=900-99999', size), { start: 900, end: 999 });
+    // Nonsense must fall through to a normal 200 response, not a bad 206.
+    for (const bad of ['', 'bytes=', 'bytes=-', 'items=0-10', 'bytes=abc-def',
+      'bytes=500-100', `bytes=${size}-`, null, undefined]) {
+      assert.strictEqual(ytserve.parseRange(bad, size), null, `should reject ${bad}`);
+    }
+  });
+
+  await test('the cache is disabled cleanly when yt-dlp is not installed', () => {
+    assert.strictEqual(new YoutubeAudioCache({}).available(), false);
+    assert.strictEqual(
+      new YoutubeAudioCache({ bin: '/nonexistent/yt-dlp', dir: tmp }).available(), false);
+  });
+
+  console.log(lines.splice(0).join('\n'));
   console.log('\nPERMISSIONS');
 
   await test('with no DJ role, anyone in the voice channel can control', () => {

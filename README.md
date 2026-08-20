@@ -93,6 +93,37 @@ What that means in practice:
 - Keep `SoundCloud` and the rest enabled. If YouTube ever stops working, you
   change `DEFAULT_SEARCH=scsearch` and the bot keeps running.
 
+### When YouTube resolves a track but won't play it
+
+Searching YouTube and *streaming* from it are separate problems. Lavalink
+regularly finds a track and then cannot fetch a single byte of it: every client
+gets refused with "Sign in to confirm you're not a bot", a SABR-only format, or
+a cipher it can't extract from the player JS. From a datacenter IP this comes
+and goes on its own — it is rate limiting, not a permanent ban, so don't
+reconfigure anything on the strength of one bad run.
+
+When it happens the bot re-fetches **that same video** with `yt-dlp`, caches the
+audio, and plays the local file (`src/lib/ytdlp.js` → `src/lib/ytserve.js`). It
+only ever runs for the track being played, never for a whole queued playlist,
+and only after Lavalink's own attempt has failed — so nothing changes on the
+fast path. Only if that fails too does the bot look for the song on another
+source.
+
+Two details decide whether this works:
+
+- **yt-dlp needs an explicit JS runtime.** It will not take one from `PATH`.
+  Without `YTDLP_NODE` pointing at a Node it considers current it reports
+  `node (unavailable)` and every download 403s — which looks exactly like an IP
+  ban. Node 22 works; the system Node 20 on a shared box may not.
+- **The `android` client is the one that works** for audio. yt-dlp's automatic
+  choice 403s and `web,tv` answers "The page needs to be reloaded". It is
+  normally ranked last because it caps *video* at ~360p, which is irrelevant
+  here.
+
+Set `YTDLP_PATH` and `YTDLP_NODE` to switch it on; leave `YTDLP_PATH` blank and
+the bot behaves exactly as it did before. Cached audio is capped by
+`YT_CACHE_MAX_MB` and evicted least-recently-used.
+
 The `youtube-source` plugin also ships `oauth` and `poToken` options that exist
 to defeat YouTube's bot detection. **They are deliberately left out of
 `application.yml`.** The plugin's own documentation warns they can get the
@@ -117,6 +148,9 @@ src/
     format.js         durations, progress bar, safe markdown
     autoplay.js       related-track selection when the queue empties
     track.js          trims tracks before saving them
+    fallback.js       finds the same song elsewhere when playback fails
+    ytdlp.js          fetches YouTube audio with yt-dlp, caches it on disk
+    ytserve.js        serves that cache to Lavalink over loopback
 lavalink/
   application.yml     Lavalink server config with plugins
 test/

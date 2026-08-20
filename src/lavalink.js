@@ -4,6 +4,7 @@ const embeds = require('./lib/embeds');
 const { controlRows, disabledRows } = require('./lib/controls');
 const { findNextTrack } = require('./lib/autoplay');
 const { findAlternative, familyOf, MAX_ATTEMPTS } = require('./lib/fallback');
+const { YoutubeAudioCache } = require('./lib/ytdlp');
 
 /**
  * Creates the Lavalink manager and wires every player event.
@@ -12,7 +13,7 @@ const { findAlternative, familyOf, MAX_ATTEMPTS } = require('./lib/fallback');
  * streaming, we only send it instructions over REST/WebSocket. That separation
  * is why this design scales to hundreds of servers on a small VPS.
  */
-function setupLavalink(client, { config, store }) {
+function setupLavalink(client, { config, store, ytCache = null, ytServer = null }) {
   const manager = new LavalinkManager({
     nodes: [{
       id: config.lavalink.id,
@@ -97,6 +98,52 @@ function setupLavalink(client, { config, store }) {
     player.set('npMessage', null);
   }
 
+  /**
+   * Re-fetches a failed YouTube track with yt-dlp and plays the cached file.
+   *
+   * Lavalink loads the local file as an anonymous http track, so its title and
+   * artwork come from the container rather than YouTube. The display fields are
+   * copied back off the original track - playback runs from `encoded`, so the
+   * overrides only affect what people see. Returns true if it is now playing.
+   */
+  async function playFromYoutubeCache(player, origin, failed) {
+    if (!ytCache || !ytServer) return false;
+    // Only worth trying once per song; a second failure means the file itself
+    // is not playable, not that YouTube was blocking us.
+    if (player.get('ytdlpTried')) return false;
+
+    const videoId = YoutubeAudioCache.videoId(origin) || YoutubeAudioCache.videoId(failed);
+    if (!videoId) return false;
+    player.set('ytdlpTried', true);
+
+    const name = await ytCache.fetch(videoId);
+    if (!name) return false;
+
+    const result = await player.search({ query: ytServer.urlFor(name) }, origin?.requester)
+      .catch(() => null);
+    const local = result?.tracks?.[0];
+    if (!local) return false;
+
+    const from = origin?.info || {};
+    Object.assign(local.info, {
+      title: from.title ?? local.info.title,
+      author: from.author ?? local.info.author,
+      artworkUrl: from.artworkUrl ?? local.info.artworkUrl,
+      uri: from.uri ?? local.info.uri,
+      sourceName: 'youtube',
+    });
+    local.requester = origin?.requester ?? failed?.requester;
+
+    try {
+      await player.play({ clientTrack: local });
+      console.log(`[ytdlp] playing "${from.title || videoId}" from cache`);
+      return true;
+    } catch (e) {
+      console.error('[ytdlp] local playback failed:', e?.message || e);
+      return false;
+    }
+  }
+
   // ----------------------------------------------------------- player events
   manager
     .on('trackStart', async (player, track) => {
@@ -104,6 +151,7 @@ function setupLavalink(client, { config, store }) {
       // Playback really started, so any in-flight source retry is resolved.
       player.set('fallbackFailures', null);
       player.set('fallbackOrigin', null);
+      player.set('ytdlpTried', null);
       await clearLastNowPlaying(player);
 
       // Keep the in-flight send so trackError can wait for it before deleting.
@@ -141,6 +189,13 @@ function setupLavalink(client, { config, store }) {
       // take its message down rather than leaving a trail of them.
       await dropLastNowPlaying(player);
 
+      // Before looking at other sources, try to play this exact video by
+      // fetching it with yt-dlp. Lavalink resolving a YouTube track but being
+      // unable to stream it is the common case, and swapping to a SoundCloud
+      // re-upload when the real track is obtainable is a worse answer.
+      const localTrack = await playFromYoutubeCache(player, origin, track).catch(() => null);
+      if (localTrack) return;
+
       if (nextFailures.length <= MAX_ATTEMPTS) {
         const alt = await findAlternative(player, origin, track?.requester, nextFailures)
           .catch(() => null);
@@ -157,6 +212,7 @@ function setupLavalink(client, { config, store }) {
 
       player.set('fallbackFailures', null);
       player.set('fallbackOrigin', null);
+      player.set('ytdlpTried', null);
       await announce(player, {
         embeds: [embeds.error(config, `Couldn't play **${title}** on any source — skipping it.`)],
       });

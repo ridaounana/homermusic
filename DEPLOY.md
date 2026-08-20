@@ -107,6 +107,51 @@ pm2 startup          # run the command it prints
 pm2 logs music-bot
 ```
 
+## 3b. yt-dlp for YouTube playback (optional but recommended)
+
+Lavalink often resolves a YouTube track it then cannot stream. The bot recovers
+by fetching that video with `yt-dlp` and playing the file locally — see the
+YouTube section in README.md. Two isolated installs, so nothing else on the box
+is affected:
+
+```bash
+sudo su - music
+
+# yt-dlp, self-contained binary (no python venv, no apt)
+mkdir -p ~/bin && curl -fsSL -o ~/bin/yt-dlp \
+  https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux
+chmod +x ~/bin/yt-dlp && ~/bin/yt-dlp --version
+
+# Node 22 purely for yt-dlp's JS challenge solver. Do NOT upgrade the system
+# Node for this - other services may be pinned to their own version.
+curl -fsSL -o /tmp/node22.tar.xz \
+  https://nodejs.org/dist/v22.19.0/node-v22.19.0-linux-x64.tar.xz
+mkdir -p ~/node-runtime && tar -xJf /tmp/node22.tar.xz -C ~/node-runtime --strip-components=1
+~/node-runtime/bin/node --version
+```
+
+Then in `.env`:
+
+```ini
+YTDLP_PATH=/home/music/bin/yt-dlp
+YTDLP_NODE=/home/music/node-runtime/bin/node
+YT_CACHE_DIR=/home/music/music-bot/data/ytcache
+YT_CACHE_MAX_MB=2048
+YT_CACHE_PORT=2444
+```
+
+Confirm the runtime is actually picked up — this is the failure that looks like
+an IP ban but is really a config problem:
+
+```bash
+~/bin/yt-dlp --verbose --simulate --js-runtimes node:/home/music/node-runtime/bin/node \
+  --remote-components ejs:github https://www.youtube.com/watch?v=dQw4w9WgXcQ 2>&1 | grep "JS runtimes"
+# want: "JS runtimes: node-22.19.0"   NOT "JS runtimes: none"
+```
+
+`YT_CACHE_PORT` binds to `127.0.0.1` only and must never be opened in the
+firewall. Keep yt-dlp updated (`~/bin/yt-dlp -U`) — YouTube changes often.
+
 ## 4. Firewall
 
 Lavalink must **not** be reachable from the internet. It listens on

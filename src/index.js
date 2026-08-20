@@ -7,6 +7,8 @@ const { config, validate } = require('./config');
 const { Store } = require('./store');
 const { setupLavalink } = require('./lavalink');
 const { handleInteraction } = require('./interactions');
+const { YoutubeAudioCache } = require('./lib/ytdlp');
+const { createCacheServer } = require('./lib/ytserve');
 
 validate();
 
@@ -36,7 +38,30 @@ for (const file of commandFiles) {
 }
 console.log(`[commands] loaded ${client.commands.size}`);
 
-setupLavalink(client, { config, store });
+// ------------------------------------------------------- yt-dlp audio cache
+// Only wired up when a yt-dlp binary is actually configured; without it the
+// bot behaves exactly as before and simply falls back to another source.
+let ytCache = null;
+let ytServer = null;
+if (config.ytdlp.enabled && config.ytdlp.bin) {
+  ytCache = new YoutubeAudioCache({
+    bin: config.ytdlp.bin,
+    nodePath: config.ytdlp.nodePath,
+    dir: config.ytdlp.cacheDir,
+    maxBytes: config.ytdlp.cacheMaxBytes,
+    timeoutMs: config.ytdlp.timeoutMs,
+  });
+  if (ytCache.available()) {
+    ytServer = createCacheServer({ dir: config.ytdlp.cacheDir, port: config.ytdlp.port });
+    ytServer.listen().catch((e) => console.error('[ytserve] failed to listen:', e?.message || e));
+    ytCache.evict().catch(() => {});
+  } else {
+    console.warn(`[ytdlp] ${config.ytdlp.bin} is not executable — YouTube recovery disabled`);
+    ytCache = null;
+  }
+}
+
+setupLavalink(client, { config, store, ytCache, ytServer });
 
 // ------------------------------------------------------------------- events
 client.once(Events.ClientReady, async (c) => {
@@ -91,6 +116,7 @@ function shutdown(signal) {
   try {
     for (const player of client.lavalink?.players?.values?.() || []) player.destroy().catch(() => {});
   } catch { /* ignore */ }
+  try { ytServer?.close?.(); } catch { /* ignore */ }
   client.destroy();
   process.exit(0);
 }

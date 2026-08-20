@@ -53,6 +53,21 @@ const config = {
   },
 
   dataFile: process.env.DATA_FILE || path.resolve(process.cwd(), 'data', 'guilds.json'),
+
+  // Fetches YouTube audio with yt-dlp when Lavalink's own YouTube source
+  // cannot play it, and serves the file back over loopback. Disabled unless
+  // YTDLP_PATH points at a real binary - see src/lib/ytdlp.js for why.
+  ytdlp: {
+    enabled: bool(process.env.YTDLP_ENABLED, true),
+    bin: process.env.YTDLP_PATH || '',
+    // yt-dlp will not take a JS runtime from PATH; it needs an explicit path
+    // to a version it considers current, or every download 403s.
+    nodePath: process.env.YTDLP_NODE || '',
+    cacheDir: process.env.YT_CACHE_DIR || path.resolve(process.cwd(), 'data', 'ytcache'),
+    cacheMaxBytes: num(process.env.YT_CACHE_MAX_MB, 2048) * 1024 * 1024,
+    port: num(process.env.YT_CACHE_PORT, 2444),
+    timeoutMs: num(process.env.YTDLP_TIMEOUT_MS, 90000),
+  },
 };
 
 function validate() {
