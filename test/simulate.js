@@ -359,6 +359,135 @@ const cmd = (name) => require(`../src/commands/${name}`);
   });
 
   console.log(lines.splice(0).join('\n'));
+  console.log('\nSPOTIFY ALBUMS');
+
+  const { SpotifyClient, parseLink } = require('../src/lib/spotify');
+
+  // Stands in for the Spotify API. Records calls so the tests can assert that
+  // the forbidden batch endpoint is never touched.
+  function stubFetch(handler) {
+    const calls = [];
+    const real = global.fetch;
+    global.fetch = async (url, opts = {}) => {
+      calls.push(String(url));
+      const r = handler(String(url), opts) || {};
+      return {
+        ok: r.status ? r.status < 400 : true,
+        status: r.status || 200,
+        json: async () => r.body,
+      };
+    };
+    return { calls, restore: () => { global.fetch = real; } };
+  }
+
+  const TOKEN = { access_token: 'tok', expires_in: 3600 };
+  const ALBUM = {
+    name: 'Random Access Memories',
+    artists: [{ name: 'Daft Punk' }],
+    images: [{ url: 'https://i.example/art.jpg' }],
+    external_urls: { spotify: 'https://open.spotify.com/album/abc' },
+    tracks: {
+      total: 2,
+      items: [
+        { name: 'Give Life Back to Music', artists: [{ name: 'Daft Punk' }], duration_ms: 274000, external_ids: { isrc: 'X1' } },
+        { name: 'Doin\' it Right', artists: [{ name: 'Daft Punk' }, { name: 'Panda Bear' }], duration_ms: 251000 },
+      ],
+    },
+  };
+
+  await test('a Spotify link is parsed in all the forms Spotify hands out', () => {
+    assert.deepStrictEqual(parseLink('https://open.spotify.com/album/4m2880jivSbbyEGAKfITCa'),
+      { kind: 'album', id: '4m2880jivSbbyEGAKfITCa' });
+    // The app copies /intl-fr/ links, which a naive regex misses.
+    assert.deepStrictEqual(parseLink('https://open.spotify.com/intl-fr/track/34prmUEDgxpFbHSszyFqpV?si=8'),
+      { kind: 'track', id: '34prmUEDgxpFbHSszyFqpV' });
+    assert.deepStrictEqual(parseLink('spotify:album:4m2880jivSbbyEGAKfITCa'),
+      { kind: 'album', id: '4m2880jivSbbyEGAKfITCa' });
+    assert.strictEqual(parseLink('https://youtube.com/watch?v=x'), null);
+    assert.strictEqual(parseLink(''), null);
+  });
+
+  await test('an album reads without touching the forbidden batch endpoint', async () => {
+    const stub = stubFetch((url) => (url.includes('/api/token') ? { body: TOKEN } : { body: ALBUM }));
+    try {
+      const sp = new SpotifyClient({ clientId: 'a', clientSecret: 'b', market: 'FR' });
+      const album = await sp.album('abc');
+      assert.strictEqual(album.name, 'Random Access Memories');
+      assert.strictEqual(album.tracks.length, 2);
+      assert.strictEqual(album.tracks[0].title, 'Give Life Back to Music');
+      assert.strictEqual(album.tracks[0].isrc, 'X1');
+      // Multiple artists are joined so the search query keeps both names.
+      assert.strictEqual(album.tracks[1].author, 'Daft Punk, Panda Bear');
+      assert.ok(album.tracks[0].artworkUrl, 'artwork comes from the album, not a per-track lookup');
+      // The 403 that breaks LavaSrc.
+      assert.ok(!stub.calls.some((u) => /\/tracks\?ids=/.test(u)),
+        `must not call the batch endpoint: ${stub.calls.join(' ')}`);
+      assert.ok(stub.calls.some((u) => u.includes('market=FR')), 'market should be passed');
+    } finally { stub.restore(); }
+  });
+
+  await test('an album longer than one page is paged in', async () => {
+    const first = { ...ALBUM, tracks: { total: 3, items: ALBUM.tracks.items } };
+    const stub = stubFetch((url) => {
+      if (url.includes('/api/token')) return { body: TOKEN };
+      if (url.includes('/tracks?limit=')) {
+        return { body: { items: [{ name: 'Contact', artists: [{ name: 'Daft Punk' }], duration_ms: 382000 }] } };
+      }
+      return { body: first };
+    });
+    try {
+      const sp = new SpotifyClient({ clientId: 'a', clientSecret: 'b' });
+      const album = await sp.album('abc');
+      assert.strictEqual(album.tracks.length, 3, 'should have paged in the third track');
+      assert.strictEqual(album.tracks[2].title, 'Contact');
+    } finally { stub.restore(); }
+  });
+
+  await test('a short page stops the loop instead of spinning forever', async () => {
+    // total lies about there being more; an empty page must end it.
+    const lying = { ...ALBUM, tracks: { total: 999, items: ALBUM.tracks.items } };
+    const stub = stubFetch((url) => {
+      if (url.includes('/api/token')) return { body: TOKEN };
+      if (url.includes('/tracks?limit=')) return { body: { items: [] } };
+      return { body: lying };
+    });
+    try {
+      const sp = new SpotifyClient({ clientId: 'a', clientSecret: 'b' });
+      const album = await sp.album('abc');
+      assert.strictEqual(album.tracks.length, 2);
+    } finally { stub.restore(); }
+  });
+
+  await test('the token is cached, and dropped when Spotify rejects it', async () => {
+    let tokenCalls = 0;
+    const stub = stubFetch((url) => {
+      if (url.includes('/api/token')) { tokenCalls += 1; return { body: TOKEN }; }
+      return { body: ALBUM };
+    });
+    try {
+      const sp = new SpotifyClient({ clientId: 'a', clientSecret: 'b' });
+      await sp.album('abc');
+      await sp.album('abc');
+      assert.strictEqual(tokenCalls, 1, 'token should be reused across calls');
+    } finally { stub.restore(); }
+
+    const stub2 = stubFetch((url) => (url.includes('/api/token')
+      ? { body: TOKEN }
+      : { status: 401, body: { error: { status: 401 } } }));
+    try {
+      const sp = new SpotifyClient({ clientId: 'a', clientSecret: 'b' });
+      await assert.rejects(() => sp.album('abc'), /401/);
+      assert.strictEqual(sp._token, null, 'a 401 must clear the cached token');
+    } finally { stub2.restore(); }
+  });
+
+  await test('no credentials means the album path stays switched off', () => {
+    assert.strictEqual(new SpotifyClient({}).enabled(), false);
+    assert.strictEqual(new SpotifyClient({ clientId: 'a' }).enabled(), false);
+    assert.strictEqual(new SpotifyClient({ clientId: 'a', clientSecret: 'b' }).enabled(), true);
+  });
+
+  console.log(lines.splice(0).join('\n'));
   console.log('\nSPOTIFY LINK DIAGNOSTICS');
 
   const linkhelp = require('../src/lib/linkhelp');

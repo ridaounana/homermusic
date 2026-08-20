@@ -79,7 +79,7 @@ commands and buttons.
 
 ```bash
 npm run check      # parses every file, validates all 25 command definitions
-npm run simulate   # 44 offline logic tests against a fake player
+npm run simulate   # 79 offline logic tests against a fake player
 ```
 
 The simulation stubs discord.js and lavalink-client, so it runs with no token
@@ -97,6 +97,28 @@ No bot streams from them, including the big ones. What LavaSrc does is read the
 *metadata* from a link (title, artist, artwork) and find a matching track on a
 source that can actually be streamed. If a Spotify link plays "the wrong
 version", that's why.
+
+### What Spotify links actually work
+
+Spotify locked several Web API endpoints for applications created after
+**2024-11-27**. Measured against the live node with valid app credentials:
+
+| Link | Works | Why |
+|---|---|---|
+| Track | yes | |
+| Album | yes, **via the bot** | LavaSrc loads the album then calls the batch `/tracks?ids=` endpoint, which is now `403`. `src/lib/spotify.js` reads the album directly and skips that call. |
+| Playlist | **no** | `/playlists/{id}/items` is `401 Valid user authentication required`, and the playlist object comes back with its track list stripped. There is nothing to read without a user login. |
+| Generated playlist (`37i9dQ…`) | **no** | Discover Weekly, Daily Mix, Radio and the editorial charts `404` for third-party apps entirely. |
+
+`preferPartnerApi` was tested both ways and changed none of this.
+
+Album tracks are queued *unresolved*: each carries its title and artist and is
+looked up on the normal search source the moment it plays, so a 30-track album
+does not fire 30 searches before the first note.
+
+Set `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` in `.env` (the same app as
+`lavalink/application.yml`) to enable album support. Without them the bot just
+reports why the link failed.
 
 **YouTube.** You chose to enable it knowing the position, so briefly for the
 record: playing YouTube audio through a bot breaks YouTube's Terms of Service.

@@ -10,6 +10,7 @@ const { handleInteraction } = require('./interactions');
 const { YoutubeAudioCache } = require('./lib/ytdlp');
 const { createCacheServer } = require('./lib/ytserve');
 const { buildPresence } = require('./lib/presence');
+const { SpotifyClient } = require('./lib/spotify');
 
 validate();
 
@@ -61,6 +62,16 @@ if (config.ytdlp.enabled && config.ytdlp.bin) {
     ytCache = null;
   }
 }
+
+// ------------------------------------------------------------------ spotify
+// Album metadata only. LavaSrc handles Spotify links itself, but its album
+// path calls a batch endpoint Spotify now forbids, so /play falls back to this.
+client.spotify = new SpotifyClient({
+  clientId: config.spotify.clientId,
+  clientSecret: config.spotify.clientSecret,
+  market: config.spotify.market,
+});
+if (client.spotify.enabled()) console.log('[spotify] album lookup enabled');
 
 setupLavalink(client, { config, store, ytCache, ytServer });
 

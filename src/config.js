@@ -72,6 +72,15 @@ const config = {
     maxPreviousTracks: num(process.env.MAX_PREVIOUS_TRACKS, 25),
   },
 
+  // Read album metadata straight from Spotify. LavaSrc cannot: it follows up
+  // with a batch /tracks?ids= call that Spotify now returns 403 for, which
+  // fails the whole album. Same credentials as lavalink/application.yml.
+  spotify: {
+    clientId: process.env.SPOTIFY_CLIENT_ID || '',
+    clientSecret: process.env.SPOTIFY_CLIENT_SECRET || '',
+    market: process.env.SPOTIFY_MARKET || 'FR',
+  },
+
   dataFile: process.env.DATA_FILE || path.resolve(process.cwd(), 'data', 'guilds.json'),
 
   // Fetches YouTube audio with yt-dlp when Lavalink's own YouTube source
